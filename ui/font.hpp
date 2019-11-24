@@ -1,4 +1,4 @@
-/* Copyright (c) 2017-2018 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2019 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -60,7 +60,6 @@ public:
 
 private:
 	Vulkan::ImageHandle texture;
-	Vulkan::ImageViewHandle view;
 	stbtt_bakedchar baked_chars[128 - 32];
 	void on_device_created(const Vulkan::DeviceCreatedEvent &e);
 	void on_device_destroyed(const Vulkan::DeviceCreatedEvent &e);

@@ -1,4 +1,4 @@
-/* Copyright (c) 2017-2018 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2019 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -68,6 +68,7 @@ public:
 	Font &get_font(FontSize size);
 
 	void reset_children();
+	void remove_child(Widget *widget);
 
 private:
 	FlatRenderer renderer;

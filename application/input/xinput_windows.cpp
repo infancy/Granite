@@ -1,4 +1,4 @@
-/* Copyright (c) 2017-2018 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2019 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -32,36 +32,17 @@ using namespace std;
 
 namespace Granite
 {
-bool XInputManager::init(Granite::InputTracker *tracker)
+bool XInputManager::init(Granite::InputTracker *tracker_)
 {
 	if (!lib)
-	{
-		try
-		{
-			lib = DynamicLibrary("xinput1_4");
-			LOGI("Found XInput 1.4!\n");
-		}
-		catch (...)
-		{
-		}
-	}
-
+		lib = DynamicLibrary("xinput1_4");
 	if (!lib)
-	{
-		try
-		{
-			lib = DynamicLibrary("xinput1_3");
-			LOGI("Found XInput 1.3!\n");
-		}
-		catch (...)
-		{
-		}
-	}
+		lib = DynamicLibrary("xinput1_3");
 
 	if (lib)
 		pXInputGetState = lib.get_symbol<decltype(&XInputGetState)>("XInputGetState");
 
-	this->tracker = tracker;
+	tracker = tracker_;
 
 	for (unsigned i = 0; i < 4; i++)
 		try_polling_device(i);

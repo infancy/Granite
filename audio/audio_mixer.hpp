@@ -1,4 +1,4 @@
-/* Copyright (c) 2017-2018 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2019 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -23,6 +23,7 @@
 #pragma once
 
 #include "audio_interface.hpp"
+#include "lock_free_message_queue.hpp"
 #include <atomic>
 #include <vector>
 #include <mutex>
@@ -31,6 +32,8 @@ namespace Granite
 {
 namespace Audio
 {
+using StreamID = uint64_t;
+
 class MixerStream
 {
 public:
@@ -42,6 +45,8 @@ public:
 	{
 		delete this;
 	}
+
+	void install_message_queue(StreamID id, Util::LockFreeMessageQueue *queue);
 
 	virtual void setup(float mixer_output_rate, unsigned mixer_channels, size_t max_num_frames)
 	{
@@ -55,9 +60,22 @@ public:
 
 	virtual unsigned get_num_channels() const = 0;
 	virtual float get_sample_rate() const = 0;
-};
 
-using StreamID = uint64_t;
+	StreamID get_stream_id() const
+	{
+		return stream_id;
+	}
+
+protected:
+	Util::LockFreeMessageQueue &get_message_queue()
+	{
+		return *message_queue;
+	}
+
+private:
+	StreamID stream_id = StreamID(-1);
+	Util::LockFreeMessageQueue *message_queue = nullptr;
+};
 
 class Mixer : public BackendCallback
 {
@@ -72,7 +90,7 @@ public:
 	// Can only be called from a non-critical thread.
 	// Returns StreamID(-1) if a mixer stream slot cannot be found.
 	StreamID add_mixer_stream(MixerStream *stream, bool start_playing = true,
-	                          float gain_db = 0.0f, float panning = 0.0f);
+	                          float initial_gain_db = 0.0f, float initial_panning = 0.0f);
 	void kill_stream(StreamID id);
 
 	// Garbage collection. Should be called regularly from a non-critical thread.
@@ -80,7 +98,7 @@ public:
 
 	// Atomically sets stream parameters, such as gain and panning.
 	// Panning is -1 (left), 0 (center), 1 (right).
-	void set_stream_mixer_parameters(StreamID id, float gain_db, float panning);
+	void set_stream_mixer_parameters(StreamID id, float new_gain_db, float new_panning);
 
 	// Returns latency-adjusted play cursor in seconds from add_mixer_stream.
 	// The play cursor monotonically increases.
@@ -97,6 +115,9 @@ public:
 
 	bool pause_stream(StreamID id);
 	bool play_stream(StreamID id);
+	static unsigned get_stream_index(StreamID id);
+
+	Util::LockFreeMessageQueue &get_message_queue();
 
 private:
 	enum { MaxSources = 128 };
@@ -127,12 +148,13 @@ private:
 
 	StreamID generate_stream_id(unsigned index);
 	bool verify_stream_id(StreamID id);
-	unsigned get_stream_index(StreamID id);
 	uint64_t get_stream_generation(StreamID id);
 
 	bool is_active = false;
 
-	void update_stream_play_cursor(unsigned index, double latency) noexcept;
+	void update_stream_play_cursor(unsigned index, double new_latency) noexcept;
+
+	Util::LockFreeMessageQueue message_queue;
 };
 
 }

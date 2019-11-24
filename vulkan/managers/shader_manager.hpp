@@ -1,4 +1,4 @@
-/* Copyright (c) 2017-2018 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2019 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -50,6 +50,8 @@ public:
 	ShaderTemplate(Device *device, const std::string &shader_path, PrecomputedShaderCache &cache, Util::Hash path_hash,
 	               const std::vector<std::string> &include_directories);
 
+	bool init();
+
 	struct Variant : public Util::IntrusiveHashMapEnabled<Variant>
 	{
 		Util::Hash hash = 0;
@@ -83,14 +85,14 @@ private:
 class ShaderProgram : public Util::IntrusiveHashMapEnabled<ShaderProgram>
 {
 public:
-	ShaderProgram(Device *device, PrecomputedShaderCache &cache, ShaderTemplate *compute)
-		: device(device), cache(cache)
+	ShaderProgram(Device *device_, PrecomputedShaderCache &cache_, ShaderTemplate *compute)
+		: device(device_), cache(cache_)
 	{
 		set_stage(Vulkan::ShaderStage::Compute, compute);
 	}
 
-	ShaderProgram(Device *device, PrecomputedShaderCache &cache, ShaderTemplate *vert, ShaderTemplate *frag)
-		: device(device), cache(cache)
+	ShaderProgram(Device *device_, PrecomputedShaderCache &cache_, ShaderTemplate *vert, ShaderTemplate *frag)
+		: device(device_), cache(cache_)
 	{
 		set_stage(Vulkan::ShaderStage::Vertex, vert);
 		set_stage(Vulkan::ShaderStage::Fragment, frag);
@@ -125,8 +127,8 @@ private:
 class ShaderManager
 {
 public:
-	ShaderManager(Device *device)
-		: device(device)
+	explicit ShaderManager(Device *device_)
+		: device(device_)
 	{
 	}
 
@@ -146,6 +148,11 @@ public:
 
 	bool get_shader_hash_by_variant_hash(Util::Hash variant_hash, Util::Hash &shader_hash);
 	void register_shader_hash_from_variant_hash(Util::Hash variant_hash, Util::Hash shader_hash);
+
+	Device *get_device()
+	{
+		return device;
+	}
 
 private:
 	Device *device;

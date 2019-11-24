@@ -33,8 +33,8 @@ struct FFTProgram : GLFFT::Program
 
 struct FFTSampler : GLFFT::Sampler
 {
-	FFTSampler(const Vulkan::Sampler &sampler)
-	    : sampler(sampler)
+	explicit FFTSampler(const Vulkan::Sampler &sampler_)
+	    : sampler(sampler_)
 	{
 	}
 
@@ -85,7 +85,7 @@ void FFTDeferredCommandBuffer::bind_program(GLFFT::Program *program)
 {
 	get_command_list().push_back(
 			[program = static_cast<FFTProgram *>(program)->program](Vulkan::CommandBuffer &cmd) {
-				cmd.set_program(*program);
+				cmd.set_program(program);
 			});
 }
 
@@ -168,7 +168,7 @@ void FFTCommandBuffer::barrier()
 void FFTCommandBuffer::bind_program(GLFFT::Program *program)
 {
 	if (cmd)
-		cmd->set_program(*static_cast<FFTProgram *>(program)->program);
+		cmd->set_program(static_cast<FFTProgram *>(program)->program);
 }
 
 void FFTCommandBuffer::bind_sampler(unsigned binding, GLFFT::Sampler *sampler)
@@ -275,6 +275,11 @@ unique_ptr<GLFFT::Texture> FFTInterface::create_texture(const void *initial_data
 unsigned FFTInterface::get_max_work_group_threads()
 {
 	return device->get_gpu_properties().limits.maxComputeWorkGroupInvocations;
+}
+
+unsigned FFTInterface::get_max_shared_memory_size()
+{
+	return device->get_gpu_properties().limits.maxComputeSharedMemorySize;
 }
 
 uint32_t FFTInterface::get_vendor_id()
@@ -400,8 +405,14 @@ void FFTInterface::submit_command_buffer(GLFFT::CommandBuffer *cmd_)
 	delete cmd;
 }
 
-FFTInterface::FFTInterface(Vulkan::Device *device)
-    : device(device)
+bool FFTInterface::supports_native_fp16()
+{
+	return device->get_device_features().storage_16bit_features.storageBuffer16BitAccess &&
+	       device->get_device_features().float16_int8_features.shaderFloat16;
+}
+
+FFTInterface::FFTInterface(Vulkan::Device *device_)
+    : device(device_)
 {
 }
 

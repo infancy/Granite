@@ -1,4 +1,4 @@
-/* Copyright (c) 2017-2018 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2019 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -24,6 +24,8 @@
 #include <assert.h>
 #include <stdexcept>
 #include "util.hpp"
+#include "global_managers.hpp"
+#include "thread_id.hpp"
 
 using namespace std;
 
@@ -32,8 +34,8 @@ namespace Granite
 
 namespace Internal
 {
-TaskGroup::TaskGroup(ThreadGroup *group)
-	: group(group)
+TaskGroup::TaskGroup(ThreadGroup *group_)
+	: group(group_)
 {
 }
 
@@ -114,21 +116,6 @@ TaskGroup::~TaskGroup()
 }
 }
 
-static thread_local unsigned thread_id_to_index = ~0u;
-
-unsigned ThreadGroup::get_current_thread_index()
-{
-	auto ret = thread_id_to_index;
-	if (ret == ~0u)
-		throw invalid_argument("Thread does not exist in thread manager or is not the main thread.");
-	return ret;
-}
-
-void ThreadGroup::register_main_thread()
-{
-	thread_id_to_index = 0;
-}
-
 void ThreadGroup::start(unsigned num_threads)
 {
 	if (active)
@@ -139,10 +126,15 @@ void ThreadGroup::start(unsigned num_threads)
 
 	thread_group.resize(num_threads);
 
+	// Make sure the worker threads have the correct global data references.
+	auto ctx = std::shared_ptr<Global::GlobalManagers>(Global::create_thread_context().release(),
+	                                                   Global::delete_thread_context);
+
 	unsigned self_index = 1;
 	for (auto &t : thread_group)
 	{
-		t = make_unique<thread>([this, self_index]() {
+		t = make_unique<thread>([this, ctx, self_index]() {
+			Global::set_thread_context(*ctx);
 			thread_looper(self_index);
 		});
 		self_index++;
@@ -269,7 +261,11 @@ bool ThreadGroup::is_idle()
 
 void ThreadGroup::thread_looper(unsigned index)
 {
-	thread_id_to_index = index;
+#ifdef GRANITE_VULKAN_MT
+	Vulkan::register_thread_index(index);
+#else
+	(void)index;
+#endif
 
 	for (;;)
 	{
@@ -309,7 +305,9 @@ void ThreadGroup::thread_looper(unsigned index)
 
 ThreadGroup::ThreadGroup()
 {
-	register_main_thread();
+#ifdef GRANITE_VULKAN_MT
+	Vulkan::register_thread_index(0);
+#endif
 	total_tasks.store(0);
 	completed_tasks.store(0);
 }

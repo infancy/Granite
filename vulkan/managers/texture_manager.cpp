@@ -1,4 +1,4 @@
-/* Copyright (c) 2017-2018 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2019 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -28,26 +28,34 @@
 
 #ifdef GRANITE_VULKAN_MT
 #include "thread_group.hpp"
+#include "thread_id.hpp"
 #endif
 
 using namespace std;
 
 namespace Vulkan
 {
-Texture::Texture(Device *device, const std::string &path, VkFormat format, const VkComponentMapping &swizzle)
-	: VolatileSource(path), device(device), format(format), swizzle(swizzle)
+bool Texture::init_texture()
 {
-	init();
+	if (!path.empty())
+		return init();
+	else
+		return true;
 }
 
-Texture::Texture(Device *device)
-	: device(device), format(VK_FORMAT_UNDEFINED)
+Texture::Texture(Device *device_, const std::string &path_, VkFormat format_, const VkComponentMapping &swizzle_)
+	: VolatileSource(path_), device(device_), format(format_), swizzle(swizzle_)
 {
 }
 
-void Texture::set_path(const std::string &path)
+Texture::Texture(Device *device_)
+	: device(device_), format(VK_FORMAT_UNDEFINED)
 {
-	this->path = path;
+}
+
+void Texture::set_path(const std::string &path_)
+{
+	path = path_;
 }
 
 void Texture::update(std::unique_ptr<Granite::File> file)
@@ -55,15 +63,15 @@ void Texture::update(std::unique_ptr<Granite::File> file)
 	auto *f = file.release();
 	auto work = [f, this]() {
 #ifdef GRANITE_VULKAN_MT
-		LOGI("Loading texture in thread index: %u\n", Granite::ThreadGroup::get_current_thread_index());
+		LOGI("Loading texture in thread index: %u\n", get_current_thread_index());
 #endif
-		unique_ptr<Granite::File> file{f};
-		auto size = file->get_size();
-		void *mapped = file->map();
+		unique_ptr<Granite::File> updated_file{f};
+		auto size = updated_file->get_size();
+		void *mapped = updated_file->map();
 		if (size && mapped)
 		{
 			if (Granite::SceneFormats::MemoryMappedTexture::is_header(mapped, size))
-				update_gtx(move(file), mapped);
+				update_gtx(move(updated_file), mapped);
 			else
 				update_other(mapped, size);
 			device->get_texture_manager().notify_updated_texture(path, *this);
@@ -71,9 +79,7 @@ void Texture::update(std::unique_ptr<Granite::File> file)
 		else
 		{
 			LOGE("Failed to map texture file ...\n");
-			auto old = handle.write_object({});
-			if (old)
-				device->keep_handle_alive(move(old));
+			update_checkerboard();
 		}
 	};
 
@@ -102,6 +108,8 @@ void Texture::update_checkerboard()
 	initial.data = checkerboard;
 
 	auto info = ImageCreateInfo::immutable_2d_image(4, 4, VK_FORMAT_R8G8B8A8_UNORM, false);
+	info.misc = IMAGE_MISC_CONCURRENT_QUEUE_GRAPHICS_BIT | IMAGE_MISC_CONCURRENT_QUEUE_ASYNC_GRAPHICS_BIT |
+	            IMAGE_MISC_CONCURRENT_QUEUE_ASYNC_COMPUTE_BIT;
 
 	auto image = device->create_image(info, &initial);
 	if (image)
@@ -134,7 +142,10 @@ void Texture::update_gtx(const Granite::SceneFormats::MemoryMappedTexture &mappe
 	info.swizzle = swizzle;
 	info.flags = (mapped_file.get_flags() & Granite::SceneFormats::MEMORY_MAPPED_TEXTURE_CUBE_MAP_COMPATIBLE_BIT) ?
 	             VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT : 0;
-	info.misc = 0;
+	info.misc = IMAGE_MISC_CONCURRENT_QUEUE_GRAPHICS_BIT | IMAGE_MISC_CONCURRENT_QUEUE_ASYNC_GRAPHICS_BIT |
+	            IMAGE_MISC_CONCURRENT_QUEUE_ASYNC_COMPUTE_BIT;
+
+	mapped_file.remap_swizzle(info.swizzle);
 
 	if (info.levels == 1 &&
 	    (mapped_file.get_flags() & Granite::SceneFormats::MEMORY_MAPPED_TEXTURE_GENERATE_MIPMAP_ON_LOAD_BIT) != 0 &&
@@ -194,9 +205,9 @@ void Texture::unload()
 	handle.reset();
 }
 
-void Texture::replace_image(ImageHandle handle)
+void Texture::replace_image(ImageHandle handle_)
 {
-	auto old = this->handle.write_object(move(handle));
+	auto old = this->handle.write_object(move(handle_));
 	if (old)
 		device->keep_handle_alive(move(old));
 
@@ -216,8 +227,8 @@ void Texture::set_enable_notification(bool enable)
 	enable_notification = enable;
 }
 
-TextureManager::TextureManager(Device *device)
-	: device(device)
+TextureManager::TextureManager(Device *device_)
+	: device(device_)
 {
 }
 
@@ -242,6 +253,8 @@ Texture *TextureManager::request_texture(const std::string &path, VkFormat forma
 		return ret;
 
 	ret = textures.emplace_yield(hash, device, path, format, mapping);
+	if (!ret->init_texture())
+		ret->update_checkerboard();
 	return ret;
 }
 

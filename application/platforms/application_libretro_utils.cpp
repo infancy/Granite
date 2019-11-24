@@ -1,4 +1,4 @@
-/* Copyright (c) 2017-2018 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2019 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -23,6 +23,8 @@
 #include "application_libretro_utils.hpp"
 #include "application.hpp"
 #include "application_events.hpp"
+#include "thread_group.hpp"
+#include "context.hpp"
 
 namespace Granite
 {
@@ -80,10 +82,16 @@ bool libretro_create_device(
 	if (!Vulkan::Context::init_loader(get_instance_proc_addr))
 		return false;
 
-	vulkan_context.reset(
-			new Vulkan::Context(instance, gpu, surface, required_device_extensions, num_required_device_extensions,
-			                    required_device_layers, num_required_device_layers,
-			                    required_features));
+	vulkan_context.reset(new Vulkan::Context);
+#ifdef GRANITE_VULKAN_MT
+	vulkan_context->set_num_thread_indices(Global::thread_group()->get_num_threads() + 1);
+#endif
+	if (!vulkan_context->init_device_from_instance(instance, gpu, surface, required_device_extensions, num_required_device_extensions,
+	                                               required_device_layers, num_required_device_layers,
+	                                               required_features))
+	{
+		return false;
+	}
 
 	vulkan_context->release_device();
 	context->gpu = vulkan_context->get_gpu();
@@ -108,7 +116,7 @@ void libretro_begin_frame(Vulkan::WSI &wsi, retro_usec_t frame_time)
 void libretro_end_frame(retro_video_refresh_t video_cb, Vulkan::WSI &wsi)
 {
 	// Present to libretro frontend.
-	auto signal_semaphore = wsi.get_device().request_semaphore();
+	auto signal_semaphore = wsi.get_device().request_legacy_semaphore();
 	vulkan_interface->set_signal_semaphore(vulkan_interface->handle,
 	                                       signal_semaphore->get_semaphore());
 	signal_semaphore->signal_external();

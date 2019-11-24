@@ -1,4 +1,4 @@
-/* Copyright (c) 2017-2018 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2019 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -33,13 +33,13 @@ struct SpriteTransformInfo
 {
 	SpriteTransformInfo() = default;
 
-	SpriteTransformInfo(const vec3 &pos, const vec2 &scale = vec2(1.0f, 1.0f),
+	SpriteTransformInfo(const vec3 &pos, const vec2 &scale_ = vec2(1.0f, 1.0f),
 	                    const mat2 &rot = mat2(1.0f),
-	                    const ivec4 &clip = ivec4(0, 0, 0x4000, 0x4000))
+	                    const ivec4 &clip_ = ivec4(0, 0, 0x4000, 0x4000))
 		: position(pos),
-	      scale(scale),
+	      scale(scale_),
 	      rotation(rot),
-	      clip(clip)
+	      clip(clip_)
 	{
 	}
 
@@ -72,18 +72,20 @@ struct LineStripInfo
 class FlatRenderer : public EventHandler
 {
 public:
-	FlatRenderer(const ShaderSuiteResolver *resolver = nullptr);
+	explicit FlatRenderer(const ShaderSuiteResolver *resolver = nullptr);
 
 	void begin();
 	void push_sprite(const SpriteInfo &info);
 	void push_sprites(const SpriteList &visible);
 
 	void render_quad(const vec3 &offset, const vec2 &size, const vec4 &color);
+
 	void render_textured_quad(const Vulkan::ImageView &view, const vec3 &offset, const vec2 &size,
 	                          const vec2 &tex_offset, const vec2 &tex_size,
-	                          bool transparent = false,
+	                          DrawPipeline pipeline,
 	                          const vec4 &color = vec4(1.0f),
-	                          Vulkan::StockSampler sampler = Vulkan::StockSampler::LinearClamp);
+	                          Vulkan::StockSampler sampler = Vulkan::StockSampler::LinearClamp,
+	                          unsigned layer = 0);
 
 	void render_text(const Font &font, const char *text,
 	                 const vec3 &offset, const vec2 &size,
@@ -112,9 +114,9 @@ private:
 	};
 	std::vector<Scissor> scissor_stack;
 
-	void render_quad(const Vulkan::ImageView *view, Vulkan::StockSampler sampler,
+	void render_quad(const Vulkan::ImageView *view, unsigned layer, Vulkan::StockSampler sampler,
 	                 const vec3 &offset, const vec2 &size, const vec2 &tex_offset, const vec2 &tex_size, const vec4 &color,
-	                 bool transparent);
+	                 DrawPipeline pipeline);
 
 	void build_scissor(ivec4 &clip, const vec2 &minimum, const vec2 &maximum) const;
 };

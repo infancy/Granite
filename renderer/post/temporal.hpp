@@ -1,4 +1,4 @@
-/* Copyright (c) 2017-2018 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2019 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -39,7 +39,7 @@ public:
 	};
 	TemporalJitter();
 	void reset();
-	void init(Type type, vec2 backbuffer_resolution);
+	void init(Type type_, vec2 backbuffer_resolution);
 
 	void step(const mat4 &projection, const mat4 &view);
 	const mat4 &get_jitter_matrix() const;

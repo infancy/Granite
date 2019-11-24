@@ -1,4 +1,4 @@
-/* Copyright (c) 2017-2018 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2019 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -60,6 +60,12 @@ public:
 		auto handle = Util::make_handle<T>(std::forward<P>(p)...);
 		add_child(handle);
 		return static_cast<T *>(handle.get());
+	}
+
+	Widget &get_child_widget(unsigned index)
+	{
+		assert(index < children.size());
+		return *children[index].widget;
 	}
 
 	void set_minimum_geometry(vec2 size)

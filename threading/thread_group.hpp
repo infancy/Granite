@@ -1,4 +1,4 @@
-/* Copyright (c) 2017-2018 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2019 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -65,8 +65,8 @@ struct TaskGroupDeleter
 
 struct TaskDeps : Util::IntrusivePtrEnabled<TaskDeps, TaskDepsDeleter, Util::MultiThreadCounter>
 {
-	explicit TaskDeps(ThreadGroup *group)
-	    : group(group)
+	explicit TaskDeps(ThreadGroup *group_)
+	    : group(group_)
 	{
 		count.store(0, std::memory_order_relaxed);
 		dependency_count.store(0, std::memory_order_relaxed);
@@ -108,8 +108,8 @@ struct TaskGroup : Util::IntrusivePtrEnabled<TaskGroup, TaskGroupDeleter, Util::
 
 struct Task
 {
-	Task(TaskDepsHandle deps, std::function<void ()> func)
-		: deps(std::move(deps)), func(std::move(func))
+	Task(TaskDepsHandle deps_, std::function<void ()> func_)
+		: deps(std::move(deps_)), func(std::move(func_))
 	{
 	}
 
@@ -139,8 +139,6 @@ public:
 
 	void stop();
 
-	static unsigned get_current_thread_index();
-
 	void enqueue_task(TaskGroup &group, std::function<void ()> func);
 	TaskGroup create_task(std::function<void ()> func);
 	TaskGroup create_task();
@@ -155,8 +153,6 @@ public:
 	void submit(TaskGroup &group);
 	void wait_idle();
 	bool is_idle();
-
-	static void register_main_thread();
 
 private:
 	Util::ThreadSafeObjectPool<Internal::Task> task_pool;

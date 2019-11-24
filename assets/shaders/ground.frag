@@ -1,7 +1,15 @@
 #version 450
-precision mediump float;
+precision highp float;
+precision highp int;
 
 #include "inc/render_target.h"
+#include "inc/two_component_normal.h"
+
+#if defined(VARIANT_BIT_0) && VARIANT_BIT_0
+#define BANDLIMITED_PIXEL
+#include "inc/bandlimited_pixel_filter.h"
+const int bandlimited_pixel_lod = 0;
+#endif
 
 layout(location = 0) in highp vec3 vPos;
 
@@ -25,11 +33,12 @@ layout(std140, set = 3, binding = 1) uniform GroundData
     vec2 uUVShift;
     vec2 uUVTilingScale;
     vec2 uTangentScale;
+    vec4 uColorSize;
 };
 
-float horiz_max(vec4 v)
+mediump float horiz_max(mediump vec4 v)
 {
-    vec2 x = max(v.xy, v.zw);
+    mediump vec2 x = max(v.xy, v.zw);
     return max(x.x, x.y);
 }
 
@@ -44,14 +53,22 @@ void main()
     mediump float weight = 1.0 / dot(types, vec4(1.0));
     types *= weight;
 
-    const mediump float lod = 0.5;
+#ifdef BANDLIMITED_PIXEL
+    BandlimitedPixelInfo info = compute_pixel_weights(uv, uColorSize.xy, uColorSize.zw, 1.0);
     mediump vec3 base_color =
-        types.x * texture(uBaseColor, vec3(uv, 0.0), lod).rgb +
-        types.y * texture(uBaseColor, vec3(uv, 1.0), lod).rgb +
-        types.z * texture(uBaseColor, vec3(uv, 2.0), lod).rgb +
-        types.w * texture(uBaseColor, vec3(uv, 3.0), lod).rgb;
+        types.x * sample_bandlimited_pixel_array(uBaseColor, vec3(uv, 0.0), info, 0.0).rgb +
+        types.y * sample_bandlimited_pixel_array(uBaseColor, vec3(uv, 1.0), info, 0.0).rgb +
+        types.z * sample_bandlimited_pixel_array(uBaseColor, vec3(uv, 2.0), info, 0.0).rgb +
+        types.w * sample_bandlimited_pixel_array(uBaseColor, vec3(uv, 3.0), info, 0.0).rgb;
+#else
+    mediump vec3 base_color =
+        types.x * texture(uBaseColor, vec3(uv, 0.0)).rgb +
+        types.y * texture(uBaseColor, vec3(uv, 1.0)).rgb +
+        types.z * texture(uBaseColor, vec3(uv, 2.0)).rgb +
+        types.w * texture(uBaseColor, vec3(uv, 3.0)).rgb;
+#endif
 
-    mediump vec3 terrain = texture(uNormalsTerrain, vUV).xyz * 2.0 - 1.0;
+    mediump vec3 terrain = two_component_normal(texture(uNormalsTerrain, vUV).xy * 2.0 - 1.0);
     terrain.xy += types.w * 0.5 * (texture(uDeepRoughNormals, uv).xy * 2.0 - 1.0);
     mediump vec3 normal = normalize(mat3(registers.Normal) * terrain.xzy); // Normal is +Y, Bitangent is +Z.
 

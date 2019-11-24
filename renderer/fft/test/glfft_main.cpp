@@ -1,4 +1,4 @@
-/* Copyright (C) 2015-2018 Hans-Kristian Arntzen <maister@archlinux.us>
+/* Copyright (C) 2015-2019 Hans-Kristian Arntzen <maister@archlinux.us>
  *
  * Permission is hereby granted, free of charge,
  * to any person obtaining a copy of this software and associated documentation files (the "Software"),
@@ -27,7 +27,9 @@ int main(int argc, char *argv[])
 {
 	if (!Vulkan::Context::init_loader(nullptr))
 		return EXIT_FAILURE;
-	Vulkan::Context context(nullptr, 0, nullptr, 0);
+	Vulkan::Context context;
+	if (!context.init_instance_and_device(nullptr, 0, nullptr, 0))
+		return EXIT_FAILURE;
 	Device device;
 	device.set_context(context);
 	device.init_external_swapchain({ ImageHandle(nullptr) });

@@ -1,4 +1,4 @@
-/* Copyright (c) 2017-2018 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2019 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -190,7 +190,7 @@ uint64_t RenderInfo::get_sprite_sort_key(Queue queue_type, Util::Hash pipeline_h
 	}
 	else
 	{
-#if 0
+#if 1
 		// Prioritize state changes over depth.
 		depth_key >>= 2;
 		return (uint64_t(ecast(layer)) << 62) | (uint64_t(pipeline_hash) << 30) | depth_key;

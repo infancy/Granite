@@ -1,4 +1,4 @@
-/* Copyright (c) 2017-2018 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2019 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -67,7 +67,7 @@ private:
 	float *phase_table = nullptr;
 	float *window_buffer = nullptr;
 
-	void init_table_kaiser(double cutoff, unsigned phases, unsigned taps, double beta);
+	void init_table_kaiser(double cutoff, unsigned phase_count, unsigned num_taps, double beta);
 };
 
 }

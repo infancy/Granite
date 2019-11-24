@@ -1,4 +1,4 @@
-/* Copyright (c) 2017-2018 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2019 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -26,6 +26,8 @@
 
 namespace Granite
 {
-void setup_ssao(RenderGraph &graph, const RenderContext &context,
-                const std::string &output, const std::string &input_depth, const std::string &input_normal);
+void setup_ssao_interleaved(RenderGraph &graph, const RenderContext &context,
+                            const std::string &output, const std::string &input_depth, const std::string &input_normal);
+void setup_ssao_naive(RenderGraph &graph, const RenderContext &context,
+                      const std::string &output, const std::string &input_depth, const std::string &input_normal);
 }

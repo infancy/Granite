@@ -1,4 +1,4 @@
-/* Copyright (c) 2017-2018 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2019 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -20,7 +20,7 @@
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#include "vulkan.hpp"
+#include "vulkan_headers.hpp"
 #include "device.hpp"
 #include "utils/image_utils.hpp"
 #include "cli_parser.hpp"
@@ -64,7 +64,10 @@ int main(int argc, char *argv[])
 	}
 
 	Context::init_loader(nullptr);
-	Context context(nullptr, 0, nullptr, 0);
+	Context context;
+	if (!context.init_instance_and_device(nullptr, 0, nullptr, 0))
+		return 1;
+
 	Device device;
 	device.set_context(context);
 	device.init_external_swapchain({ ImageHandle(nullptr) });

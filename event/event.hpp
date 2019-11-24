@@ -1,4 +1,4 @@
-/* Copyright (c) 2017-2018 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2019 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -61,9 +61,24 @@ class Event
 public:
 	virtual ~Event() = default;
 
-	void set_cookie(uint64_t cookie)
+	Event() = default;
+
+	// Doesn't have to be set unless type information is going to be lost.
+	// E.g. we're storing the Event some place and we have type-erasure.
+	// Having this set helps us recover type information for dispatch.
+	explicit Event(EventType type_)
+		: type(type_)
 	{
-		this->cookie = cookie;
+	}
+
+	EventType get_type_id() const
+	{
+		return type;
+	}
+
+	void set_cookie(uint64_t cookie_)
+	{
+		cookie = cookie_;
 	}
 
 	uint64_t get_cookie() const
@@ -72,7 +87,8 @@ public:
 	}
 
 private:
-	uint64_t cookie;
+	EventType type = 0;
+	uint64_t cookie = 0;
 };
 
 class EventHandler
@@ -133,6 +149,13 @@ public:
 		dispatch_event(l.handlers, t);
 	}
 
+	void dispatch_inline(const Event &e)
+	{
+		assert(e.get_type_id() != 0);
+		auto &l = events[e.get_type_id()];
+		dispatch_event(l.handlers, e);
+	}
+
 	void dispatch();
 
 	template<typename T, typename EventType, bool (T::*mem_fn)(const EventType &)>
@@ -166,8 +189,8 @@ public:
 			handler, handler };
 
 		static constexpr auto type_id = EventType::get_type_id();
-		auto &events = latched_events[type_id];
-		dispatch_up_events(events.queued_events, h);
+		auto &levents = latched_events[type_id];
+		dispatch_up_events(levents.queued_events, h);
 
 		auto &l = latched_events[type_id];
 		if (l.dispatching)

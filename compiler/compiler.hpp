@@ -1,4 +1,4 @@
-/* Copyright (c) 2017-2018 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2019 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -37,7 +37,8 @@ enum class Stage
 	TessEvaluation,
 	Geometry,
 	Fragment,
-	Compute
+	Compute,
+	Unknown
 };
 
 enum class Target
@@ -49,25 +50,25 @@ enum class Target
 class GLSLCompiler
 {
 public:
-	void set_target(Target target)
+	void set_target(Target target_)
 	{
-		this->target = target;
+		target = target_;
 	}
 
-	void set_stage(Stage stage)
+	void set_stage(Stage stage_)
 	{
-		this->stage = stage;
+		stage = stage_;
 	}
 
-	void set_source(std::string source, std::string path)
+	void set_source(std::string source_, std::string path)
 	{
-		this->source = std::move(source);
+		source = std::move(source_);
 		source_path = std::move(path);
 	}
 
 	void set_include_directories(const std::vector<std::string> *include_directories);
 
-	void set_source_from_file(const std::string &path);
+	bool set_source_from_file(const std::string &path);
 	bool preprocess();
 
 	std::vector<uint32_t> compile(const std::vector<std::pair<std::string, int>> *defines = nullptr);
@@ -86,7 +87,7 @@ private:
 	std::string source;
 	std::string source_path;
 	const std::vector<std::string> *include_directories = nullptr;
-	Stage stage = Stage::Compute;
+	Stage stage = Stage::Unknown;
 
 	std::unordered_set<std::string> dependencies;
 	std::string preprocessed_source;

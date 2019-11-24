@@ -1,4 +1,4 @@
-/* Copyright (c) 2017-2018 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2019 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -23,7 +23,7 @@
 #include "application.hpp"
 #include "application_events.hpp"
 #include "application_wsi.hpp"
-#include "vulkan.hpp"
+#include "vulkan_headers.hpp"
 #include <thread>
 #include <mutex>
 #include <condition_variable>
@@ -35,6 +35,7 @@
 #include <cmath>
 #include "dynamic_library.hpp"
 #include "hw_counters/hw_counter_interface.h"
+#include "thread_group.hpp"
 
 #ifdef HAVE_GRANITE_AUDIO
 #include "audio_interface.hpp"
@@ -134,24 +135,6 @@ FrameWorker::~FrameWorker()
 struct WSIPlatformHeadless : Granite::GraniteWSIPlatform
 {
 public:
-	WSIPlatformHeadless(unsigned width, unsigned height)
-		: width(width), height(height)
-	{
-		if (!Context::init_loader(nullptr))
-			throw runtime_error("Failed to initialize Vulkan loader.");
-
-		auto *em = Global::event_manager();
-		if (em)
-		{
-			em->dequeue_all_latched(ApplicationLifecycleEvent::get_type_id());
-			em->enqueue_latched<ApplicationLifecycleEvent>(ApplicationLifecycle::Stopped);
-			em->dequeue_all_latched(ApplicationLifecycleEvent::get_type_id());
-			em->enqueue_latched<ApplicationLifecycleEvent>(ApplicationLifecycle::Paused);
-			em->dequeue_all_latched(ApplicationLifecycleEvent::get_type_id());
-			em->enqueue_latched<ApplicationLifecycleEvent>(ApplicationLifecycle::Running);
-		}
-	}
-
 	float get_estimated_frame_presentation_duration() override
 	{
 		return 0.0f;
@@ -219,16 +202,16 @@ public:
 		return height;
 	}
 
-	void notify_resize(unsigned width, unsigned height)
+	void notify_resize(unsigned width_, unsigned height_)
 	{
 		resize = true;
-		this->width = width;
-		this->height = height;
+		width = width_;
+		height = height_;
 	}
 
-	void set_max_frames(unsigned max_frames)
+	void set_max_frames(unsigned max_frames_)
 	{
-		this->max_frames = max_frames;
+		max_frames = max_frames_;
 	}
 
 	bool has_external_swapchain() override
@@ -236,12 +219,40 @@ public:
 		return true;
 	}
 
-	void init(Application *app)
+	bool init(unsigned width_, unsigned height_)
 	{
-		this->app = app;
+		width = width_;
+		height = height_;
+		if (!Context::init_loader(nullptr))
+		{
+			LOGE("Failed to initialize Vulkan loader.\n");
+			return false;
+		}
+
+		auto *em = Global::event_manager();
+		if (em)
+		{
+			em->dequeue_all_latched(ApplicationLifecycleEvent::get_type_id());
+			em->enqueue_latched<ApplicationLifecycleEvent>(ApplicationLifecycle::Stopped);
+			em->dequeue_all_latched(ApplicationLifecycleEvent::get_type_id());
+			em->enqueue_latched<ApplicationLifecycleEvent>(ApplicationLifecycle::Paused);
+			em->dequeue_all_latched(ApplicationLifecycleEvent::get_type_id());
+			em->enqueue_latched<ApplicationLifecycleEvent>(ApplicationLifecycle::Running);
+		}
+
+		return true;
+	}
+
+	bool init_headless(Application *app_)
+	{
+		app = app_;
 
 		auto &wsi = app->get_wsi();
-		wsi.init_external_context(make_unique<Context>(nullptr, 0, nullptr, 0));
+		auto context = make_unique<Context>();
+		context->set_num_thread_indices(Global::thread_group()->get_num_threads() + 1);
+		if (!context->init_instance_and_device(nullptr, 0, nullptr, 0))
+			return false;
+		wsi.init_external_context(move(context));
 
 		auto &device = wsi.get_device();
 
@@ -269,6 +280,7 @@ public:
 			swap->set_swapchain_layout(VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
 
 		wsi.init_external_swapchain(swapchain_images);
+		return true;
 	}
 
 	void set_time_step(double t)
@@ -279,9 +291,9 @@ public:
 	void begin_frame()
 	{
 		auto &wsi = app->get_wsi();
-		wsi.set_external_frame(index, acquire_semaphore[index], time_step);
-		acquire_semaphore[index].reset();
-		worker_threads[index]->wait();
+		wsi.set_external_frame(frame_index, acquire_semaphore[frame_index], time_step);
+		acquire_semaphore[frame_index].reset();
+		worker_threads[frame_index]->wait();
 	}
 
 	void wait_workers()
@@ -305,16 +317,16 @@ public:
 
 				auto cmd = device.request_command_buffer(CommandBuffer::Type::AsyncTransfer);
 
-				cmd->copy_image_to_buffer(*readback_buffers[index], *swapchain_images[index],
+				cmd->copy_image_to_buffer(*readback_buffers[frame_index], *swapchain_images[frame_index],
 				                          0, {}, {width, height, 1},
 				                          0, 0, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1});
 
 				cmd->barrier(VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
 				             VK_PIPELINE_STAGE_HOST_BIT, VK_ACCESS_HOST_READ_BIT);
 
-				device.submit(cmd, &readback_fence[index], 1, &acquire_semaphore[index]);
+				device.submit(cmd, &readback_fence[frame_index], 1, &acquire_semaphore[frame_index]);
 
-				worker_threads[index]->set_work([cb = next_readback_cb, index = this->index]() {
+				worker_threads[frame_index]->set_work([cb = next_readback_cb, index = frame_index]() {
 					cb(index);
 				});
 				next_readback_cb = {};
@@ -326,45 +338,45 @@ public:
 
 				auto cmd = device.request_command_buffer(CommandBuffer::Type::AsyncTransfer);
 
-				cmd->copy_image_to_buffer(*readback_buffers[index], *swapchain_images[index],
+				cmd->copy_image_to_buffer(*readback_buffers[frame_index], *swapchain_images[frame_index],
 				                          0, {}, {width, height, 1},
 				                          0, 0, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1});
 
 				cmd->barrier(VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
 				             VK_PIPELINE_STAGE_HOST_BIT, VK_ACCESS_HOST_READ_BIT);
 
-				device.submit(cmd, &readback_fence[index], 1, &acquire_semaphore[index]);
+				device.submit(cmd, &readback_fence[frame_index], 1, &acquire_semaphore[frame_index]);
 
-				worker_threads[index]->set_work([this, index = this->index, frame = this->frames]() {
+				worker_threads[frame_index]->set_work([this, index = frame_index, frame = this->frames]() {
 					dump_frame(frame, index);
 				});
 			}
 			else
 			{
-				acquire_semaphore[index] = release_semaphore;
+				acquire_semaphore[frame_index] = release_semaphore;
 			}
 		}
 		release_semaphore.reset();
-		index = (index + 1) % SwapchainImages;
+		frame_index = (frame_index + 1) % SwapchainImages;
 		frames++;
 	}
 
 	void set_next_readback(const std::string &path)
 	{
-		next_readback_cb = [this, path](unsigned index) {
+		next_readback_cb = [this, path](unsigned rb_index) {
 			auto &wsi = app->get_wsi();
 			auto &device = wsi.get_device();
 
-			readback_fence[index]->wait();
-			readback_fence[index].reset();
+			readback_fence[rb_index]->wait();
+			readback_fence[rb_index].reset();
 
-			auto *ptr = static_cast<uint32_t *>(device.map_host_buffer(*readback_buffers[index], MEMORY_ACCESS_READ_WRITE_BIT));
+			auto *ptr = static_cast<uint32_t *>(device.map_host_buffer(*readback_buffers[rb_index], MEMORY_ACCESS_READ_WRITE_BIT));
 			for (unsigned i = 0; i < width * height; i++)
 				ptr[i] |= 0xff000000u;
 
 			if (!stbi_write_png(path.c_str(), width, height, 4, ptr, width * 4))
 				LOGE("Failed to write PNG to disk.\n");
-			device.unmap_host_buffer(*readback_buffers[index], MEMORY_ACCESS_READ_WRITE_BIT);
+			device.unmap_host_buffer(*readback_buffers[rb_index], MEMORY_ACCESS_READ_WRITE_BIT);
 		};
 	}
 
@@ -376,32 +388,31 @@ public:
 
 	void setup_hw_counter_lib(const char *path)
 	{
-		try
+		hw_counter_lib = DynamicLibrary(path);
+		if (!hw_counter_lib)
 		{
-			hw_counter_lib = DynamicLibrary(path);
-			auto *get_iface = hw_counter_lib.get_symbol<get_hw_counter_interface_t>("get_hw_counter_interface");
-			if (!get_iface)
-			{
-				LOGE("Count not find symbol for HW counter interface!\n");
-				return;
-			}
-
-			if (!get_iface(&hw_counter_iface))
-			{
-				LOGE("Failed to get HW counter interface!\n");
-				return;
-			}
-
-			hw_counter_handle = hw_counter_iface.create();
-			if (!hw_counter_handle)
-			{
-				LOGE("Failed to create HW counter handle!\n");
-				return;
-			}
+			LOGE("Failed to load HW counter library.\n");
+			return;
 		}
-		catch (const std::exception &e)
+
+		auto *get_iface = hw_counter_lib.get_symbol<get_hw_counter_interface_t>("get_hw_counter_interface");
+		if (!get_iface)
 		{
-			LOGE("Failed to load HW counter library: %s\n", e.what());
+			LOGE("Count not find symbol for HW counter interface!\n");
+			return;
+		}
+
+		if (!get_iface(&hw_counter_iface))
+		{
+			LOGE("Failed to get HW counter interface!\n");
+			return;
+		}
+
+		hw_counter_handle = hw_counter_iface.create();
+		if (!hw_counter_handle)
+		{
+			LOGE("Failed to create HW counter handle!\n");
+			return;
 		}
 	}
 
@@ -417,7 +428,7 @@ private:
 	unsigned height = 0;
 	unsigned frames = 0;
 	unsigned max_frames = UINT_MAX;
-	unsigned index = 0;
+	unsigned frame_index = 0;
 	double time_step = 0.01;
 	string png_readback;
 	enum { SwapchainImages = 4 };
@@ -563,7 +574,10 @@ int application_main_headless(Application *(*create_application)(int, char **), 
 
 	if (app)
 	{
-		auto platform = make_unique<WSIPlatformHeadless>(args.width, args.height);
+		auto platform = make_unique<WSIPlatformHeadless>();
+		if (!platform->init(args.width, args.height))
+			return 1;
+
 		auto *p = platform.get();
 
 		if (!args.hw_counter_lib.empty())
@@ -576,7 +590,7 @@ int application_main_headless(Application *(*create_application)(int, char **), 
 			p->enable_png_readback(args.png_path);
 		p->set_max_frames(args.max_frames);
 		p->set_time_step(args.time_step);
-		p->init(app.get());
+		p->init_headless(app.get());
 
 #ifdef HAVE_GRANITE_AUDIO
 		Global::start_audio_system();
@@ -675,6 +689,8 @@ int application_main_headless(Application *(*create_application)(int, char **), 
 		}
 
 		p->wait_threads();
+		app.reset();
+		Granite::Global::deinit();
 		return 0;
 	}
 	else

@@ -1,4 +1,4 @@
-/* Copyright (c) 2017-2018 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2019 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -29,15 +29,17 @@ namespace Granite
 class MMapFile : public File
 {
 public:
-	MMapFile(const std::string &path, FileMode mode);
+	static MMapFile *open(const std::string &path, FileMode mode);
 	~MMapFile();
 	void *map() override;
-	void *map_write(size_t size) override;
+	void *map_write(size_t map_size) override;
 	void unmap() override;
 	size_t get_size() override;
 	bool reopen() override;
 
 private:
+	MMapFile() = default;
+	bool init(const std::string &path, FileMode mode);
 	int fd = -1;
 	void *mapped = nullptr;
 	size_t size = 0;

@@ -1,4 +1,4 @@
-/* Copyright (c) 2017-2018 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2019 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -40,9 +40,9 @@ public:
 		return text;
 	}
 
-	void set_label_alignment(Font::Alignment alignment)
+	void set_label_alignment(Font::Alignment alignment_)
 	{
-		this->alignment = alignment;
+		alignment = alignment_;
 	}
 
 	void set_untoggled_font_color(vec4 color)

@@ -1,4 +1,4 @@
-/* Copyright (c) 2017-2018 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2019 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -34,15 +34,18 @@ class Label : public Widget
 {
 public:
 	Label(std::string text = "", FontSize font_size = FontSize::Normal);
+
 	void set_text(std::string text);
+	void set_font_size(FontSize font_size);
+
 	const std::string &get_text() const
 	{
 		return text;
 	}
 
-	void set_font_alignment(Font::Alignment alignment)
+	void set_font_alignment(Font::Alignment alignment_)
 	{
-		this->alignment = alignment;
+		alignment = alignment_;
 		geometry_changed();
 	}
 
@@ -51,9 +54,9 @@ public:
 		return alignment;
 	}
 
-	void set_color(vec4 color)
+	void set_color(vec4 color_)
 	{
-		this->color = color;
+		color = color_;
 	}
 
 	vec4 get_color() const

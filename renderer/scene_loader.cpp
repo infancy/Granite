@@ -1,4 +1,4 @@
-/* Copyright (c) 2017-2018 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2019 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -98,8 +98,9 @@ Scene::NodeHandle SceneLoader::build_tree_for_subscene(const SubsceneData &subsc
 				{
 					if (animation.skin_compat == skin_compat)
 					{
-						animation_system->register_animation(animation.name, animation);
-						animation_system->start_animation(*nodeptr, animation.name, 0.0, true);
+						auto animation_id = animation_system->register_animation(animation.name, animation);
+						auto state_id = animation_system->start_animation(*nodeptr, animation_id, 0.0);
+						animation_system->set_repeating(state_id, true);
 					}
 				}
 #endif
@@ -122,8 +123,9 @@ Scene::NodeHandle SceneLoader::build_tree_for_subscene(const SubsceneData &subsc
 	{
 		if (!animation.skinning)
 		{
-			animation_system->register_animation(animation.name, animation);
-			animation_system->start_animation(nodes.data(), animation.name, 0.0, true);
+			auto animation_id = animation_system->register_animation(animation.name, animation);
+			auto state_id = animation_system->start_animation_multi(nodes.data(), nodes.size(), animation_id, 0.0);
+			animation_system->set_repeating(state_id, true);
 		}
 	}
 
@@ -171,8 +173,8 @@ Scene::NodeHandle SceneLoader::build_tree_for_subscene(const SubsceneData &subsc
 		if (node && !node->get_parent())
 			root->add_child(node);
 #else
-	for (auto &node_index : scene_nodes.node_indices)
-		root->add_child(nodes[node_index]);
+	for (auto &scene_node_index : scene_nodes.node_indices)
+		root->add_child(nodes[scene_node_index]);
 #endif
 
 	return root;
@@ -263,47 +265,22 @@ void SceneLoader::load_animation(const std::string &path, SceneFormats::Animatio
 
 Scene::NodeHandle SceneLoader::parse_gltf(const std::string &path)
 {
-	SubsceneData scene;
-	scene.parser = make_unique<GLTF::Parser>(path);
+	SubsceneData subscene;
+	subscene.parser = make_unique<GLTF::Parser>(path);
 
-	for (auto &mesh : scene.parser->get_meshes())
+	for (auto &mesh : subscene.parser->get_meshes())
+		subscene.meshes.push_back(create_imported_mesh(mesh, subscene.parser->get_materials().data()));
+
+	if (!subscene.parser->get_environments().empty())
 	{
-		SceneFormats::MaterialInfo default_material;
-		default_material.uniform_base_color = vec4(0.3f, 1.0f, 0.3f, 1.0f);
-		default_material.uniform_metallic = 0.0f;
-		default_material.uniform_roughness = 1.0f;
-		AbstractRenderableHandle renderable;
+		auto &env = subscene.parser->get_environments().front();
 
-		bool skinned = mesh.attribute_layout[ecast(MeshAttribute::BoneIndex)].format != VK_FORMAT_UNDEFINED;
-		if (skinned)
-		{
-			if (mesh.has_material)
-				renderable = Util::make_handle<ImportedSkinnedMesh>(mesh,
-				                                                    scene.parser->get_materials()[mesh.material_index]);
-			else
-				renderable = Util::make_handle<ImportedSkinnedMesh>(mesh, default_material);
-		}
-		else
-		{
-			if (mesh.has_material)
-				renderable = Util::make_handle<ImportedMesh>(mesh,
-				                                             scene.parser->get_materials()[mesh.material_index]);
-			else
-				renderable = Util::make_handle<ImportedMesh>(mesh, default_material);
-		}
-		scene.meshes.push_back(renderable);
-	}
-
-	if (!scene.parser->get_environments().empty())
-	{
-		auto &env = scene.parser->get_environments().front();
-
-		EntityHandle entity;
+		Entity *entity = nullptr;
 		Util::IntrusivePtr<Skybox> skybox;
 		if (!env.cube.path.empty())
 		{
 			skybox = Util::make_handle<Skybox>(env.cube.path, false);
-			entity = this->scene->create_renderable(skybox, nullptr);
+			entity = scene->create_renderable(skybox, nullptr);
 			entity->allocate_component<BackgroundComponent>();
 
 			if (!env.reflection.path.empty() && !env.irradiance.path.empty())
@@ -321,7 +298,7 @@ Scene::NodeHandle SceneLoader::parse_gltf(const std::string &path)
 		if (env.fog.falloff != 0.0f)
 		{
 			if (!entity)
-				entity = this->scene->create_entity();
+				entity = scene->create_entity();
 
 			FogParameters params = {};
 			params.color = env.fog.color;
@@ -330,7 +307,7 @@ Scene::NodeHandle SceneLoader::parse_gltf(const std::string &path)
 		}
 	}
 
-	return build_tree_for_subscene(scene);
+	return build_tree_for_subscene(subscene);
 }
 
 Scene::NodeHandle SceneLoader::parse_scene_format(const std::string &path, const std::string &json)
@@ -496,22 +473,25 @@ Scene::NodeHandle SceneLoader::parse_scene_format(const std::string &path, const
 			track.update_length();
 
 			auto ident = to_string(index);
+			AnimationID animation_id = 0;
 
 			if (!track.channels.empty())
-				animation_system->register_animation(ident, track);
+				animation_id = animation_system->register_animation(ident, track);
 
 			bool per_instance = false;
 			if (animation.HasMember("perInstance"))
 				per_instance = animation["perInstance"].GetBool();
 
 			auto &targets = animation["targetNodes"];
-			for (auto itr = targets.Begin(); itr != targets.End(); ++itr)
+			for (auto target_itr = targets.Begin(); target_itr != targets.End(); ++target_itr)
 			{
-				auto index = itr->GetUint();
-				auto &root = hierarchy[index];
+				auto &root = hierarchy[target_itr->GetUint()];
 
 				if (root->get_children().empty() || !per_instance)
-					animation_system->start_animation(*root, ident, 0.0, true);
+				{
+					auto state_id = animation_system->start_animation(*root, animation_id, 0.0);
+					animation_system->set_repeating(state_id, true);
+				}
 				else
 				{
 					for (auto &channel : track.channels)
@@ -519,7 +499,10 @@ Scene::NodeHandle SceneLoader::parse_scene_format(const std::string &path, const
 							throw logic_error("Cannot use per-instance translation.");
 
 					for (auto &child : root->get_children())
-						animation_system->start_animation(*child, ident, 0.0, true);
+					{
+						auto state_id = animation_system->start_animation(*child, animation_id, 0.0);
+						animation_system->set_repeating(state_id, true);
+					}
 				}
 			}
 		}
@@ -532,9 +515,9 @@ Scene::NodeHandle SceneLoader::parse_scene_format(const std::string &path, const
 		if (elem.HasMember("children"))
 		{
 			auto &children = elem["children"];
-			for (auto itr = children.Begin(); itr != children.End(); ++itr)
+			for (auto child_itr = children.Begin(); child_itr != children.End(); ++child_itr)
 			{
-				uint32_t index = itr->GetUint();
+				uint32_t index = child_itr->GetUint();
 				(*hier_itr)->add_child(hierarchy[index]);
 			}
 		}
@@ -549,7 +532,7 @@ Scene::NodeHandle SceneLoader::parse_scene_format(const std::string &path, const
 	{
 		auto &bg = doc["background"];
 
-		EntityHandle entity;
+		Entity *entity = nullptr;
 
 		if (bg.HasMember("skybox"))
 		{
@@ -660,6 +643,9 @@ Scene::NodeHandle SceneLoader::parse_scene_format(const std::string &path, const
 		info.normalmap_fine = Path::relpath(path, terrain["normalTexture"].GetString());
 		info.splatmap = Path::relpath(path, terrain["splatmapTexture"].GetString());
 
+		if (terrain.HasMember("bandlimitedPixel"))
+			info.bandlimited_pixel = terrain["bandlimitedPixel"].GetBool();
+
 		float tiling_factor = 1.0f;
 		if (terrain.HasMember("tilingFactor"))
 			tiling_factor = terrain["tilingFactor"].GetFloat();
@@ -670,11 +656,11 @@ Scene::NodeHandle SceneLoader::parse_scene_format(const std::string &path, const
 		if (terrain.HasMember("patchData"))
 		{
 			auto patch_path = Path::relpath(path, terrain["patchData"].GetString());
-			string json;
-			if (Global::filesystem()->read_file_to_string(patch_path, json))
+			string patch_json;
+			if (Global::filesystem()->read_file_to_string(patch_path, patch_json))
 			{
 				Document patch_doc;
-				patch_doc.Parse(json);
+				patch_doc.Parse(patch_json);
 				auto &bias = patch_doc["bias"];
 				for (auto itr = bias.Begin(); itr != bias.End(); ++itr)
 					info.patch_lod_bias.push_back(itr->GetFloat());

@@ -1,4 +1,4 @@
-/* Copyright (c) 2017-2018 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2019 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -67,26 +67,30 @@ struct AnimationChannel
 		return timestamps.back();
 	}
 
-	void get_index_phase(float t, unsigned &index, float &phase) const
+	void get_index_phase(float t, unsigned &index, float &phase, float &dt) const
 	{
-		if (t <= timestamps.front() || timestamps.size() == 1)
+		if (t < timestamps.front() || timestamps.size() == 1)
 		{
 			index = 0;
 			phase = 0.0f;
+			dt = 0.0f;
 		}
 		else if (t >= timestamps.back())
 		{
+			assert(timestamps.size() >= 2);
 			index = timestamps.size() - 2;
 			phase = 1.0f;
+			dt = timestamps[index + 1] - timestamps[index];
 		}
 		else
 		{
 			unsigned end_target = 0;
-			while (t > timestamps[end_target])
+			while (t >= timestamps[end_target])
 				end_target++;
 
 			index = end_target - 1;
 			phase = (t - timestamps[index]) / (timestamps[end_target] - timestamps[index]);
+			dt = timestamps[index + 1] - timestamps[index];
 		}
 	}
 };
@@ -159,8 +163,8 @@ struct MaterialInfo
 	struct Texture
 	{
 		Texture() = default;
-		Texture(std::string path, VkComponentMapping swiz)
-			: path(std::move(path)), swizzle(swiz)
+		Texture(std::string path_, VkComponentMapping swiz_)
+			: path(std::move(path_)), swizzle(swiz_)
 		{}
 
 		std::string path;
@@ -254,6 +258,13 @@ struct Mesh
 	uint32_t count = 0;
 };
 
+// A simplified mesh representation for CPU use.
+struct CollisionMesh
+{
+	std::vector<vec4> positions;
+	std::vector<uint32_t> indices;
+};
+
 struct SceneInformation
 {
 	Util::ArrayView<const MaterialInfo> materials;
@@ -271,6 +282,7 @@ bool mesh_recompute_tangents(Mesh &mesh);
 bool mesh_renormalize_normals(Mesh &mesh);
 bool mesh_renormalize_tangents(Mesh &mesh);
 bool mesh_flip_tangents_w(Mesh &mesh);
+bool extract_collision_mesh(CollisionMesh &collision_mesh, const Mesh &mesh);
 
 void mesh_deduplicate_vertices(Mesh &mesh);
 Mesh mesh_optimize_index_buffer(const Mesh &mesh, bool stripify);

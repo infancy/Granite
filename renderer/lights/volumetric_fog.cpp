@@ -1,4 +1,4 @@
-/* Copyright (c) 2017-2018 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2019 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -65,11 +65,11 @@ void VolumetricFog::set_fog_density(float density)
 	density_mod = density;
 }
 
-void VolumetricFog::set_resolution(unsigned width, unsigned height, unsigned depth)
+void VolumetricFog::set_resolution(unsigned width_, unsigned height_, unsigned depth_)
 {
-	this->width = width;
-	this->height = height;
-	this->depth = depth;
+	width = width_;
+	height = height_;
+	depth = depth_;
 }
 
 void VolumetricFog::add_texture_dependency(string name)
@@ -224,9 +224,13 @@ void VolumetricFog::build_fog(CommandBuffer &cmd, ImageView &fog, ImageView &lig
 	cmd.set_program("builtin://shaders/lights/fog_accumulate.comp");
 	struct Push
 	{
+		alignas(16) vec3 inv_resolution;
 		alignas(16) uvec3 count;
 	} push;
 
+	push.inv_resolution.x = 1.0f / float(light.get_image().get_width());
+	push.inv_resolution.y = 1.0f / float(light.get_image().get_height());
+	push.inv_resolution.z = 1.0f / float(light.get_image().get_depth());
 	push.count = uvec3(width, height, depth);
 
 	cmd.push_constants(&push, 0, sizeof(push));
@@ -296,9 +300,9 @@ void VolumetricFog::set_base_renderer(Renderer *, Renderer *, Renderer *)
 {
 }
 
-void VolumetricFog::set_base_render_context(const RenderContext *context)
+void VolumetricFog::set_base_render_context(const RenderContext *context_)
 {
-	this->context = context;
+	context = context_;
 }
 
 void VolumetricFog::setup_render_pass_dependencies(RenderGraph &graph, RenderPass &target)

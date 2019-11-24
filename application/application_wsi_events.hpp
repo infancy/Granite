@@ -1,4 +1,4 @@
-/* Copyright (c) 2017-2018 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2019 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -23,7 +23,7 @@
 #pragma once
 
 #include "event.hpp"
-#include "vulkan.hpp"
+#include "vulkan_headers.hpp"
 
 namespace Vulkan
 {
@@ -34,8 +34,8 @@ class DeviceCreatedEvent : public Granite::Event
 public:
 	GRANITE_EVENT_TYPE_DECL(DeviceCreatedEvent)
 
-	DeviceCreatedEvent(Device *device)
-		: device(*device)
+	explicit DeviceCreatedEvent(Device *device_)
+		: device(*device_)
 	{}
 
 	Device &get_device() const
@@ -52,11 +52,11 @@ class DisplayTimingStutterEvent : public Granite::Event
 public:
 	GRANITE_EVENT_TYPE_DECL(WSIStutterEvent)
 
-	DisplayTimingStutterEvent(uint32_t current_serial, uint32_t observed_serial,
-	                          unsigned dropped_frames)
-		: current_serial(current_serial),
-		  observed_serial(observed_serial),
-		  dropped_frames(dropped_frames)
+	DisplayTimingStutterEvent(uint32_t current_serial_, uint32_t observed_serial_,
+	                          unsigned dropped_frames_)
+		: current_serial(current_serial_),
+		  observed_serial(observed_serial_),
+		  dropped_frames(dropped_frames_)
 	{
 	}
 
@@ -86,8 +86,12 @@ class SwapchainParameterEvent : public Granite::Event
 public:
 	GRANITE_EVENT_TYPE_DECL(SwapchainParameterEvent)
 
-	SwapchainParameterEvent(Device *device, unsigned width, unsigned height, float aspect_ratio, unsigned count, VkFormat format)
-		: device(*device), width(width), height(height), aspect_ratio(aspect_ratio), image_count(count), format(format)
+	SwapchainParameterEvent(Device *device_,
+	                        unsigned width_, unsigned height_,
+	                        float aspect_ratio_, unsigned count_,
+	                        VkFormat format_, VkSurfaceTransformFlagBitsKHR transform_)
+		: device(*device_), width(width_), height(height_),
+		  aspect_ratio(aspect_ratio_), image_count(count_), format(format_), transform(transform_)
 	{}
 
 	Device &get_device() const
@@ -120,6 +124,11 @@ public:
 		return format;
 	}
 
+	VkSurfaceTransformFlagBitsKHR get_prerotate() const
+	{
+		return transform;
+	}
+
 private:
 	Device &device;
 	unsigned width;
@@ -127,6 +136,7 @@ private:
 	float aspect_ratio;
 	unsigned image_count;
 	VkFormat format;
+	VkSurfaceTransformFlagBitsKHR transform;
 };
 
 
@@ -135,8 +145,8 @@ class SwapchainIndexEvent : public Granite::Event
 public:
 	GRANITE_EVENT_TYPE_DECL(SwapchainIndexEvent)
 
-	SwapchainIndexEvent(Device *device, unsigned index)
-		: device(*device), index(index)
+	SwapchainIndexEvent(Device *device_, unsigned index_)
+		: device(*device_), index(index_)
 	{}
 
 	Device &get_device() const

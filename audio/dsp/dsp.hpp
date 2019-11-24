@@ -1,4 +1,4 @@
-/* Copyright (c) 2017-2018 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2019 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -22,17 +22,9 @@
 
 #pragma once
 
-#include <cmath>
-
-#if defined(_WIN32) && !defined(__SSE__)
-#define __SSE__
-#endif
-
-#if defined(__SSE__)
-#include <xmmintrin.h>
-#elif defined(__ARM_NEON)
-#include <arm_neon.h>
-#endif
+#include <math.h>
+#include <stdint.h>
+#include "simd_headers.hpp"
 
 namespace Granite
 {
@@ -48,7 +40,7 @@ static inline void accumulate_channel(float * __restrict output, const float * _
 	{
 		float32x4_t acc = vld1q_f32(output);
 		float32x4_t in = vld1q_f32(input);
-		acc = vfmaq_n_f32(acc, in, gain);
+		acc = vmlaq_n_f32(acc, in, gain);
 		vst1q_f32(output, acc);
 
 		output += 4;
@@ -58,7 +50,6 @@ static inline void accumulate_channel(float * __restrict output, const float * _
 	size_t overflow_count = count & 3;
 	for (size_t i = 0; i < overflow_count; i++)
 		output[i] += input[i] * gain;
-
 #elif defined(__SSE__)
 	size_t rounded_count = count & ~3;
 	__m128 gain_splat = _mm_set1_ps(gain);
@@ -76,16 +67,109 @@ static inline void accumulate_channel(float * __restrict output, const float * _
 	size_t overflow_count = count & 3;
 	for (size_t i = 0; i < overflow_count; i++)
 		output[i] += input[i] * gain;
-
 #else
 	for (size_t i = 0; i < count; i++)
 		output[i] += input[i] * gain;
 #endif
 }
 
+static inline void replace_channel(float * __restrict output, const float * __restrict input, float gain, size_t count) noexcept
+{
+#ifdef __ARM_NEON
+	size_t rounded_count = count & ~3;
+	for (size_t i = 0; i < rounded_count; i += 4)
+	{
+		float32x4_t in = vld1q_f32(input);
+		in = vmulq_n_f32(in, gain);
+		vst1q_f32(output, in);
+
+		output += 4;
+		input += 4;
+	}
+
+	size_t overflow_count = count & 3;
+	for (size_t i = 0; i < overflow_count; i++)
+		output[i] = input[i] * gain;
+#elif defined(__SSE__)
+	size_t rounded_count = count & ~3;
+	__m128 gain_splat = _mm_set1_ps(gain);
+	for (size_t i = 0; i < rounded_count; i += 4)
+	{
+		__m128 in = _mm_loadu_ps(input);
+		in = _mm_mul_ps(in, gain_splat);
+		_mm_storeu_ps(output, in);
+
+		output += 4;
+		input += 4;
+	}
+
+	size_t overflow_count = count & 3;
+	for (size_t i = 0; i < overflow_count; i++)
+		output[i] = input[i] * gain;
+#else
+	for (size_t i = 0; i < count; i++)
+		output[i] = input[i] * gain;
+#endif
+}
+
+static inline void accumulate_channel_nogain(float * __restrict output, const float * __restrict input, size_t count) noexcept
+{
+#ifdef __ARM_NEON
+	size_t rounded_count = count & ~3;
+	for (size_t i = 0; i < rounded_count; i += 4)
+	{
+		float32x4_t acc = vld1q_f32(output);
+		float32x4_t in = vld1q_f32(input);
+		acc = vaddq_f32(acc, in);
+		vst1q_f32(output, acc);
+
+		output += 4;
+		input += 4;
+	}
+
+	size_t overflow_count = count & 3;
+	for (size_t i = 0; i < overflow_count; i++)
+		output[i] += input[i];
+#elif defined(__SSE__)
+	size_t rounded_count = count & ~3;
+	for (size_t i = 0; i < rounded_count; i += 4)
+	{
+		__m128 acc = _mm_loadu_ps(output);
+		__m128 in = _mm_loadu_ps(input);
+		acc = _mm_add_ps(acc, in);
+		_mm_storeu_ps(output, acc);
+
+		output += 4;
+		input += 4;
+	}
+
+	size_t overflow_count = count & 3;
+	for (size_t i = 0; i < overflow_count; i++)
+		output[i] += input[i];
+#else
+	for (size_t i = 0; i < count; i++)
+		output[i] += input[i];
+#endif
+}
+
+static inline void convert_to_mono(float * __restrict output,
+                                   const float * __restrict const *input,
+                                   unsigned num_channels,
+                                   size_t count) noexcept
+{
+	float inv_channels = 1.0f / num_channels;
+	for (size_t i = 0; i < count; i++)
+	{
+		float ret = 0.0f;
+		for (unsigned c = 0; c < num_channels; c++)
+			ret += input[c][i];
+		output[i] = ret * inv_channels;
+	}
+}
+
 static int16_t f32_to_i16(float v) noexcept
 {
-	int32_t i = int32_t(std::round(v * 0x8000));
+	auto i = int32_t(roundf(v * 0x8000));
 	if (i > 0x7fff)
 		return 0x7fff;
 	else if (i < -0x8000)
@@ -168,6 +252,25 @@ static inline void interleave_stereo_f32_i16(int16_t * __restrict target,
 	}
 #endif
 }
+
+struct EqualizerParameter
+{
+	float freq;
+	float gain_db;
+};
+
+float gain_to_db(float gain);
+float db_to_gain(float db);
+
+// Parameters must come in sorted order.
+void create_parametric_eq_filter(float *coeffs, unsigned num_coeffs,
+                                 float sample_rate,
+                                 const EqualizerParameter *parameters,
+                                 unsigned num_parameters);
+
+double sinc(double val);
+double kaiser_window_function(double index, double beta);
+
 }
 }
 }

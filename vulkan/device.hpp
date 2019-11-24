@@ -1,4 +1,4 @@
-/* Copyright (c) 2017-2018 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2019 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -35,7 +35,7 @@
 #include "semaphore_manager.hpp"
 #include "event_manager.hpp"
 #include "shader.hpp"
-#include "vulkan.hpp"
+#include "context.hpp"
 #include "query_pool.hpp"
 #include "buffer_pool.hpp"
 #include <memory>
@@ -52,14 +52,15 @@
 #include <atomic>
 #include <mutex>
 #include <condition_variable>
-#include "thread_group.hpp"
 #endif
 
 #ifdef GRANITE_VULKAN_FOSSILIZE
 #include "fossilize.hpp"
+#include "thread_group.hpp"
 #endif
 
 #include "quirks.hpp"
+#include "small_vector.hpp"
 
 namespace Vulkan
 {
@@ -89,6 +90,7 @@ struct HandlePool
 	VulkanObjectPool<EventHolder> events;
 	VulkanObjectPool<QueryPoolResult> query;
 	VulkanObjectPool<CommandBuffer> command_buffers;
+	VulkanObjectPool<BindlessDescriptorPool> bindless_descriptor_pool;
 };
 
 class Device
@@ -120,6 +122,8 @@ public:
 	friend struct LinearHostImageDeleter;
 	friend class CommandBuffer;
 	friend struct CommandBufferDeleter;
+	friend class BindlessDescriptorPool;
+	friend struct BindlessDescriptorPoolDeleter;
 	friend class Program;
 	friend class WSI;
 	friend class Cookie;
@@ -143,6 +147,7 @@ public:
 	void init_swapchain(const std::vector<VkImage> &swapchain_images, unsigned width, unsigned height, VkFormat format);
 	void init_external_swapchain(const std::vector<ImageHandle> &swapchain_images);
 	void init_frame_contexts(unsigned count);
+	const VolkDeviceTable &get_device_table() const;
 
 	ImageView &get_swapchain_view();
 	ImageView &get_swapchain_view(unsigned index);
@@ -177,6 +182,7 @@ public:
 	                  Semaphore *semaphore = nullptr);
 	void add_wait_semaphore(CommandBuffer::Type type, Semaphore semaphore, VkPipelineStageFlags stages, bool flush);
 	CommandBuffer::Type get_physical_queue_type(CommandBuffer::Type queue_type) const;
+	void register_time_interval(QueryPoolHandle start_ts, QueryPoolHandle end_ts, const char *tag);
 
 	// Request shaders and programs. These objects are owned by the Device.
 	Shader *request_shader(const uint32_t *code, size_t size);
@@ -196,6 +202,7 @@ public:
 
 	// Create buffers and images.
 	BufferHandle create_buffer(const BufferCreateInfo &info, const void *initial = nullptr);
+	BufferHandle create_imported_host_buffer(const BufferCreateInfo &info, VkExternalMemoryHandleTypeFlagBits type, void *host_buffer);
 	ImageHandle create_image(const ImageCreateInfo &info, const ImageInitialData *initial = nullptr);
 	ImageHandle create_image_from_staging_buffer(const ImageCreateInfo &info, const InitialImageBuffer *buffer);
 	LinearHostImageHandle create_linear_host_image(const LinearHostImageCreateInfo &info);
@@ -217,6 +224,9 @@ public:
 	BufferViewHandle create_buffer_view(const BufferViewCreateInfo &view_info);
 	SamplerHandle create_sampler(const SamplerCreateInfo &info);
 
+	BindlessDescriptorPoolHandle create_bindless_descriptor_pool(BindlessResourceType type,
+	                                                             unsigned num_sets, unsigned num_descriptors);
+
 	// Render pass helpers.
 	bool image_format_is_supported(VkFormat format, VkFormatFeatureFlags required, VkImageTiling tiling = VK_IMAGE_TILING_OPTIMAL) const;
 	void get_format_properties(VkFormat format, VkFormatProperties *properties);
@@ -229,8 +239,9 @@ public:
 	                                    unsigned index = 0, unsigned samples = 1, unsigned layers = 1);
 	RenderPassInfo get_swapchain_render_pass(SwapchainRenderPass style);
 
-	// Request semaphores.
-	Semaphore request_semaphore();
+	// Request legacy (non-timeline) semaphores.
+	// Timeline semaphores are only used internally to reduce handle bloat.
+	Semaphore request_legacy_semaphore();
 	Semaphore request_external_semaphore(VkSemaphore semaphore, bool signalled);
 #ifndef _WIN32
 	Semaphore request_imported_semaphore(int fd, VkExternalSemaphoreHandleTypeFlagBitsKHR handle_type);
@@ -281,9 +292,11 @@ private:
 	VkInstance instance = VK_NULL_HANDLE;
 	VkPhysicalDevice gpu = VK_NULL_HANDLE;
 	VkDevice device = VK_NULL_HANDLE;
+	const VolkDeviceTable *table = nullptr;
 	VkQueue graphics_queue = VK_NULL_HANDLE;
 	VkQueue compute_queue = VK_NULL_HANDLE;
 	VkQueue transfer_queue = VK_NULL_HANDLE;
+	unsigned num_thread_indices = 1;
 
 #ifdef GRANITE_VULKAN_MT
 	std::atomic<uint64_t> cookie;
@@ -314,6 +327,9 @@ private:
 
 	DeviceFeatures ext;
 	void init_stock_samplers();
+	void init_timeline_semaphores();
+	void init_bindless();
+	void deinit_timeline_semaphores();
 
 	// Make sure this is deleted last.
 	HandlePool handle_pool;
@@ -325,6 +341,7 @@ private:
 		SemaphoreManager semaphore;
 		EventManager event;
 		BufferPool vbo, ibo, ubo, staging;
+		TimestampIntervalManager timestamps;
 	};
 	Managers managers;
 
@@ -341,14 +358,15 @@ private:
 
 	struct PerFrame
 	{
-		PerFrame(Device *device);
+		explicit PerFrame(Device *device);
 		~PerFrame();
 		void operator=(const PerFrame &) = delete;
 		PerFrame(const PerFrame &) = delete;
 
 		void begin();
 
-		VkDevice device;
+		Device &device;
+		const VolkDeviceTable &table;
 		Managers &managers;
 		std::vector<CommandPool> graphics_cmd_pool;
 		std::vector<CommandPool> compute_cmd_pool;
@@ -360,8 +378,16 @@ private:
 		std::vector<BufferBlock> ubo_blocks;
 		std::vector<BufferBlock> staging_blocks;
 
+		VkSemaphore graphics_timeline_semaphore;
+		VkSemaphore compute_timeline_semaphore;
+		VkSemaphore transfer_timeline_semaphore;
+		uint64_t timeline_fence_graphics = 0;
+		uint64_t timeline_fence_compute = 0;
+		uint64_t timeline_fence_transfer = 0;
+
 		std::vector<VkFence> wait_fences;
 		std::vector<VkFence> recycle_fences;
+
 		std::vector<DeviceAllocation> allocations;
 		std::vector<VkFramebuffer> destroyed_framebuffers;
 		std::vector<VkSampler> destroyed_samplers;
@@ -370,13 +396,22 @@ private:
 		std::vector<VkBufferView> destroyed_buffer_views;
 		std::vector<VkImage> destroyed_images;
 		std::vector<VkBuffer> destroyed_buffers;
-		std::vector<CommandBufferHandle> graphics_submissions;
-		std::vector<CommandBufferHandle> compute_submissions;
-		std::vector<CommandBufferHandle> transfer_submissions;
+		std::vector<VkDescriptorPool> destroyed_descriptor_pools;
+		Util::SmallVector<CommandBufferHandle> graphics_submissions;
+		Util::SmallVector<CommandBufferHandle> compute_submissions;
+		Util::SmallVector<CommandBufferHandle> transfer_submissions;
 		std::vector<VkSemaphore> recycled_semaphores;
 		std::vector<VkEvent> recycled_events;
 		std::vector<VkSemaphore> destroyed_semaphores;
 		std::vector<ImageHandle> keep_alive_images;
+
+		struct TimestampIntervalHandles
+		{
+			QueryPoolHandle start_ts;
+			QueryPoolHandle end_ts;
+			TimestampInterval *timestamp_tag;
+		};
+		std::vector<TimestampIntervalHandles> timestamp_intervals;
 	};
 	// The per frame structure must be destroyed after
 	// the hashmap data structures below, so it must be declared before.
@@ -394,10 +429,20 @@ private:
 
 	struct QueueData
 	{
-		std::vector<Semaphore> wait_semaphores;
-		std::vector<VkPipelineStageFlags> wait_stages;
+		Util::SmallVector<Semaphore> wait_semaphores;
+		Util::SmallVector<VkPipelineStageFlags> wait_stages;
 		bool need_fence = false;
+
+		VkSemaphore timeline_semaphore = VK_NULL_HANDLE;
+		uint64_t current_timeline = 0;
 	} graphics, compute, transfer;
+
+	struct InternalFence
+	{
+		VkFence fence;
+		VkSemaphore timeline;
+		uint64_t value;
+	};
 
 	// Pending buffers which need to be copied from CPU to GPU before submitting graphics or compute work.
 	struct
@@ -407,7 +452,7 @@ private:
 		std::vector<BufferBlock> ubo;
 	} dma;
 
-	void submit_queue(CommandBuffer::Type type, VkFence *fence,
+	void submit_queue(CommandBuffer::Type type, InternalFence *fence,
 	                  unsigned semaphore_count = 0,
 	                  Semaphore *semaphore = nullptr);
 
@@ -443,6 +488,9 @@ private:
 	VulkanCache<Shader> shaders;
 	VulkanCache<Program> programs;
 
+	DescriptorSetAllocator *bindless_sampled_image_allocator_fp = nullptr;
+	DescriptorSetAllocator *bindless_sampled_image_allocator_integer = nullptr;
+
 	FramebufferAllocator framebuffer_allocator;
 	TransientAttachmentAllocator transient_allocator;
 	VkPipelineCache pipeline_cache = VK_NULL_HANDLE;
@@ -453,7 +501,8 @@ private:
 
 	CommandPool &get_command_pool(CommandBuffer::Type type, unsigned thread);
 	QueueData &get_queue_data(CommandBuffer::Type type);
-	std::vector<CommandBufferHandle> &get_queue_submissions(CommandBuffer::Type type);
+	VkQueue get_vk_queue(CommandBuffer::Type type) const;
+	Util::SmallVector<CommandBufferHandle> &get_queue_submissions(CommandBuffer::Type type);
 	void clear_wait_semaphores();
 	void submit_staging(CommandBufferHandle &cmd, VkBufferUsageFlags usage, bool flush);
 	PipelineEvent request_pipeline_event();
@@ -462,7 +511,7 @@ private:
 	std::function<void ()> queue_unlock_callback;
 	void flush_frame(CommandBuffer::Type type);
 	void sync_buffer_blocks();
-	void submit_empty_inner(CommandBuffer::Type type, VkFence *fence,
+	void submit_empty_inner(CommandBuffer::Type type, InternalFence *fence,
 	                        unsigned semaphore_count,
 	                        Semaphore *semaphore);
 
@@ -477,8 +526,9 @@ private:
 	void recycle_semaphore(VkSemaphore semaphore);
 	void destroy_event(VkEvent event);
 	void free_memory(const DeviceAllocation &alloc);
-	void reset_fence(VkFence fence);
+	void reset_fence(VkFence fence, bool observed_wait);
 	void keep_handle_alive(ImageHandle handle);
+	void destroy_descriptor_pool(VkDescriptorPool desc_pool);
 
 	void destroy_buffer_nolock(VkBuffer buffer);
 	void destroy_image_nolock(VkImage image);
@@ -491,6 +541,7 @@ private:
 	void recycle_semaphore_nolock(VkSemaphore semaphore);
 	void destroy_event_nolock(VkEvent event);
 	void free_memory_nolock(const DeviceAllocation &alloc);
+	void destroy_descriptor_pool_nolock(VkDescriptorPool desc_pool);
 
 	void flush_frame_nolock();
 	CommandBufferHandle request_command_buffer_nolock(unsigned thread_index, CommandBuffer::Type type = CommandBuffer::Type::Generic);
@@ -517,7 +568,7 @@ private:
 	void wait_idle_nolock();
 	void end_frame_nolock();
 
-	Fence request_fence();
+	Fence request_legacy_fence();
 
 #ifdef GRANITE_VULKAN_FILESYSTEM
 	ShaderManager shader_manager;
@@ -528,29 +579,24 @@ private:
 
 #ifdef GRANITE_VULKAN_FOSSILIZE
 	Fossilize::StateRecorder state_recorder;
-	std::mutex state_recorder_lock;
-	bool enqueue_create_sampler(Fossilize::Hash hash, unsigned index, const VkSamplerCreateInfo *create_info, VkSampler *sampler) override;
-	bool enqueue_create_descriptor_set_layout(Fossilize::Hash hash, unsigned index, const VkDescriptorSetLayoutCreateInfo *create_info, VkDescriptorSetLayout *layout) override;
-	bool enqueue_create_pipeline_layout(Fossilize::Hash hash, unsigned index, const VkPipelineLayoutCreateInfo *create_info, VkPipelineLayout *layout) override;
-	bool enqueue_create_shader_module(Fossilize::Hash hash, unsigned index, const VkShaderModuleCreateInfo *create_info, VkShaderModule *module) override;
-	bool enqueue_create_render_pass(Fossilize::Hash hash, unsigned index, const VkRenderPassCreateInfo *create_info, VkRenderPass *render_pass) override;
-	bool enqueue_create_compute_pipeline(Fossilize::Hash hash, unsigned index, const VkComputePipelineCreateInfo *create_info, VkPipeline *pipeline) override;
-	bool enqueue_create_graphics_pipeline(Fossilize::Hash hash, unsigned index, const VkGraphicsPipelineCreateInfo *create_info, VkPipeline *pipeline) override;
-	void wait_enqueue() override;
+	bool enqueue_create_sampler(Fossilize::Hash hash, const VkSamplerCreateInfo *create_info, VkSampler *sampler) override;
+	bool enqueue_create_descriptor_set_layout(Fossilize::Hash hash, const VkDescriptorSetLayoutCreateInfo *create_info, VkDescriptorSetLayout *layout) override;
+	bool enqueue_create_pipeline_layout(Fossilize::Hash hash, const VkPipelineLayoutCreateInfo *create_info, VkPipelineLayout *layout) override;
+	bool enqueue_create_shader_module(Fossilize::Hash hash, const VkShaderModuleCreateInfo *create_info, VkShaderModule *module) override;
+	bool enqueue_create_render_pass(Fossilize::Hash hash, const VkRenderPassCreateInfo *create_info, VkRenderPass *render_pass) override;
+	bool enqueue_create_compute_pipeline(Fossilize::Hash hash, const VkComputePipelineCreateInfo *create_info, VkPipeline *pipeline) override;
+	bool enqueue_create_graphics_pipeline(Fossilize::Hash hash, const VkGraphicsPipelineCreateInfo *create_info, VkPipeline *pipeline) override;
+	void notify_replayed_resources_for_type() override;
 	VkPipeline fossilize_create_graphics_pipeline(Fossilize::Hash hash, VkGraphicsPipelineCreateInfo &info);
 	VkPipeline fossilize_create_compute_pipeline(Fossilize::Hash hash, VkComputePipelineCreateInfo &info);
 
-	unsigned register_graphics_pipeline(Fossilize::Hash hash, const VkGraphicsPipelineCreateInfo &info);
-	unsigned register_compute_pipeline(Fossilize::Hash hash, const VkComputePipelineCreateInfo &info);
-	unsigned register_render_pass(Fossilize::Hash hash, const VkRenderPassCreateInfo &info);
-	unsigned register_descriptor_set_layout(Fossilize::Hash hash, const VkDescriptorSetLayoutCreateInfo &info);
-	unsigned register_pipeline_layout(Fossilize::Hash hash, const VkPipelineLayoutCreateInfo &info);
-	unsigned register_shader_module(Fossilize::Hash hash, const VkShaderModuleCreateInfo &info);
-
-	void set_render_pass_handle(unsigned index, VkRenderPass render_pass);
-	void set_descriptor_set_layout_handle(unsigned index, VkDescriptorSetLayout set_layout);
-	void set_pipeline_layout_handle(unsigned index, VkPipelineLayout layout);
-	void set_shader_module_handle(unsigned index, VkShaderModule module);
+	void register_graphics_pipeline(Fossilize::Hash hash, const VkGraphicsPipelineCreateInfo &info);
+	void register_compute_pipeline(Fossilize::Hash hash, const VkComputePipelineCreateInfo &info);
+	void register_render_pass(VkRenderPass render_pass, Fossilize::Hash hash, const VkRenderPassCreateInfo &info);
+	void register_descriptor_set_layout(VkDescriptorSetLayout layout, Fossilize::Hash hash, const VkDescriptorSetLayoutCreateInfo &info);
+	void register_pipeline_layout(VkPipelineLayout layout, Fossilize::Hash hash, const VkPipelineLayoutCreateInfo &info);
+	void register_shader_module(VkShaderModule module, Fossilize::Hash hash, const VkShaderModuleCreateInfo &info);
+	void register_sampler(VkSampler sampler, Fossilize::Hash hash, const VkSamplerCreateInfo &info);
 
 	struct
 	{
@@ -567,5 +613,8 @@ private:
 
 	ImplementationWorkarounds workarounds;
 	void init_workarounds();
+	void report_checkpoints();
+
+	void fill_buffer_sharing_indices(VkBufferCreateInfo &create_info, uint32_t *sharing_indices);
 };
 }

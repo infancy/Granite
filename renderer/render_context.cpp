@@ -1,4 +1,4 @@
-/* Copyright (c) 2017-2018 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2019 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -42,9 +42,9 @@ void RenderContext::on_device_destroyed(const DeviceCreatedEvent &)
 {
 }
 
-void RenderContext::set_camera(const Camera &camera)
+void RenderContext::set_camera(const Camera &camera_)
 {
-	set_camera(camera.get_projection(), camera.get_view());
+	set_camera(camera_.get_projection(), camera_.get_view());
 }
 
 void RenderContext::set_camera(const mat4 &projection, const mat4 &view)

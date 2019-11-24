@@ -1,4 +1,4 @@
-/* Copyright (c) 2017-2018 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2019 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -38,7 +38,7 @@ public:
 
 	Vulkan::WSI &get_wsi()
 	{
-		return wsi;
+		return application_wsi;
 	}
 
 	Vulkan::WSIPlatform &get_platform()
@@ -77,7 +77,7 @@ protected:
 
 private:
 	std::unique_ptr<Vulkan::WSIPlatform> platform;
-	Vulkan::WSI wsi;
+	Vulkan::WSI application_wsi;
 	bool requested_shutdown = false;
 };
 

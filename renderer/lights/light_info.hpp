@@ -1,4 +1,4 @@
-/* Copyright (c) 2017-2018 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2019 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -35,9 +35,9 @@ struct PointTransform
 struct PositionalFragmentInfo
 {
 	vec3 color;
-	float outer;
+	float spot_scale;
 	vec3 position;
-	float inner;
+	float spot_bias;
 	vec3 direction;
 	float inv_radius;
 };

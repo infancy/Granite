@@ -1,4 +1,4 @@
-/* Copyright (c) 2017-2018 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2019 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -41,7 +41,16 @@ class Texture : public Util::VolatileSource<Texture>,
 {
 public:
 	friend class Util::VolatileSource<Texture>;
+	friend class TextureManager;
+	friend class Util::ObjectPool<Texture>;
 
+	bool init_texture();
+	void set_path(const std::string &path);
+	Image *get_image();
+	void replace_image(ImageHandle handle);
+	void set_enable_notification(bool enable);
+
+private:
 	Texture(Device *device, const std::string &path, VkFormat format = VK_FORMAT_UNDEFINED,
 	        const VkComponentMapping &swizzle = {
 			        VK_COMPONENT_SWIZZLE_R,
@@ -49,15 +58,8 @@ public:
 			        VK_COMPONENT_SWIZZLE_B,
 			        VK_COMPONENT_SWIZZLE_A });
 
-	Texture(Device *device);
-	void set_path(const std::string &path);
+	explicit Texture(Device *device);
 
-	Image *get_image();
-
-	void replace_image(ImageHandle handle);
-	void set_enable_notification(bool enable);
-
-private:
 	Device *device;
 	Util::AsyncObjectSink<ImageHandle> handle;
 	VkFormat format;

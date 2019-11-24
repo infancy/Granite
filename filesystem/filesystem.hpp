@@ -1,4 +1,4 @@
-/* Copyright (c) 2017-2018 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2019 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -93,7 +93,7 @@ enum class FileMode
 class StdioFile : public File
 {
 public:
-	StdioFile(const std::string &path, FileMode mode);
+	static StdioFile *open(const std::string &path, FileMode mode);
 
 	~StdioFile();
 
@@ -108,6 +108,8 @@ public:
 	bool reopen() override;
 
 private:
+	StdioFile() = default;
+	bool init(const std::string &path, FileMode mode);
 	FILE *file = nullptr;
 	size_t size = 0;
 	FileMode mode;
@@ -153,8 +155,8 @@ protected:
 class FilesystemProtocolEvent : public Event
 {
 public:
-	FilesystemProtocolEvent(const std::string &protocol, FilesystemBackend &backend)
-			: protocol(protocol), backend(backend)
+	FilesystemProtocolEvent(const std::string &protocol_, FilesystemBackend &backend_)
+		: protocol(protocol_), backend(backend_)
 	{
 	}
 

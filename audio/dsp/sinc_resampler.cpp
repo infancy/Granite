@@ -1,4 +1,4 @@
-/* Copyright (c) 2017-2018 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2019 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -22,7 +22,7 @@
 
 // Rewrote the RetroArch Sinc resampler for my purpose here.
 
-/* Copyright  (C) 2010-2018 The RetroArch team
+/* Copyright  (C) 2010-2019 The RetroArch team
  *
  * ---------------------------------------------------------------------------------------
  * The following license statement only applies to this file (sinc_resampler.c).
@@ -44,7 +44,7 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 
-/* Copyright  (C) 2010-2018 The RetroArch team
+/* Copyright  (C) 2010-2019 The RetroArch team
  *
  * ---------------------------------------------------------------------------------------
  * The following license statement only applies to this file (filters.h).
@@ -66,7 +66,7 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 
-/* Copyright  (C) 2010-2018 The RetroArch team
+/* Copyright  (C) 2010-2019 The RetroArch team
  *
  * ---------------------------------------------------------------------------------------
  * The following license statement only applies to this file (memalign.c).
@@ -88,22 +88,16 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#if defined(_WIN32) && !defined(__SSE__)
-#define __SSE__
-#endif
-
+#include "simd_headers.hpp"
 #include "sinc_resampler.hpp"
-#include <cmath>
-#include <cstdlib>
+#include "aligned_alloc.hpp"
+#include "dsp.hpp"
+#include <math.h>
+#include <stdlib.h>
+#include <string.h>
 
 #ifndef PI
 #define PI 3.14159265359
-#endif
-
-#if defined(__SSE__)
-#include <xmmintrin.h>
-#elif defined(__ARM_NEON)
-#include <arm_neon.h>
 #endif
 
 namespace Granite
@@ -112,108 +106,46 @@ namespace Audio
 {
 namespace DSP
 {
-static void *memalign_alloc(size_t boundary, size_t size)
+
+void SincResampler::init_table_kaiser(double cutoff, unsigned phase_count, unsigned num_taps, double beta)
 {
-	void **place = NULL;
-	uintptr_t addr = 0;
-	void *ptr = malloc(boundary + size + sizeof(uintptr_t));
-	if (!ptr)
-		return NULL;
-
-	addr = ((uintptr_t)ptr + sizeof(uintptr_t) + boundary) & ~(boundary - 1);
-	place = (void**)addr;
-	place[-1] = ptr;
-
-	return (void*)addr;
-}
-
-static void memalign_free(void *ptr)
-{
-	void **p = NULL;
-	if (!ptr)
-		return;
-
-	p = (void**)ptr;
-	free(p[-1]);
-}
-
-/* Modified Bessel function of first order.
- * Check Wiki for mathematical definition ... */
-static inline double besseli0(double x)
-{
-	double sum = 0.0;
-	double factorial = 1.0;
-	double factorial_mult = 0.0;
-	double x_pow = 1.0;
-	double two_div_pow = 1.0;
-	double x_sqr = x * x;
-
-	/* Approximate. This is an infinite sum.
-	 * Luckily, it converges rather fast. */
-	for (unsigned i = 0; i < 18; i++)
-	{
-		sum += x_pow * two_div_pow / (factorial * factorial);
-
-		factorial_mult += 1.0;
-		x_pow *= x_sqr;
-		two_div_pow *= 0.25;
-		factorial *= factorial_mult;
-	}
-
-	return sum;
-}
-
-static inline double sinc(double val)
-{
-	if (std::fabs(val) < 0.00001)
-		return 1.0;
-	return sin(val) / val;
-}
-
-static inline double kaiser_window_function(double index, double beta)
-{
-	return besseli0(beta * std::sqrt(1.0 - index * index));
-}
-
-void SincResampler::init_table_kaiser(double cutoff, unsigned phases, unsigned taps, double beta)
-{
-	double window_mod = kaiser_window_function(0.0, beta);
+	double window_mod = DSP::kaiser_window_function(0.0, beta);
 	const unsigned stride = 2;
-	double sidelobes = taps / 2.0;
+	double sidelobes = num_taps / 2.0;
 
-	for (unsigned i = 0; i < phases; i++)
+	for (unsigned i = 0; i < phase_count; i++)
 	{
-		for (unsigned j = 0; j < taps; j++)
+		for (unsigned j = 0; j < num_taps; j++)
 		{
-			unsigned n = j * phases + i;
-			double window_phase = double(n) / double(phases * taps); /* [0, 1). */
+			unsigned n = j * phase_count + i;
+			double window_phase = double(n) / double(phase_count * num_taps); /* [0, 1). */
 			window_phase = 2.0 * window_phase - 1.0; /* [-1, 1) */
 			double sinc_phase = sidelobes * window_phase;
-			float val = float(cutoff * sinc(PI * sinc_phase * cutoff) * kaiser_window_function(window_phase, beta) / window_mod);
-			phase_table[i * stride * taps + j] = val;
+			float val = float(cutoff * DSP::sinc(PI * sinc_phase * cutoff) * DSP::kaiser_window_function(window_phase, beta) / window_mod);
+			phase_table[i * stride * num_taps + j] = val;
 		}
 	}
 
-	for (unsigned p = 0; p < phases - 1; p++)
+	for (unsigned p = 0; p < phase_count - 1; p++)
 	{
-		for (unsigned j = 0; j < taps; j++)
+		for (unsigned j = 0; j < num_taps; j++)
 		{
-			float delta = phase_table[(p + 1) * stride * taps + j] - phase_table[p * stride * taps + j];
-			phase_table[(p * stride + 1) * taps + j] = delta;
+			float delta = phase_table[(p + 1) * stride * num_taps + j] - phase_table[p * stride * num_taps + j];
+			phase_table[(p * stride + 1) * num_taps + j] = delta;
 		}
 	}
 
-	unsigned phase = phases - 1;
-	for (unsigned j = 0; j < taps; j++)
+	unsigned phase = phase_count - 1;
+	for (unsigned j = 0; j < num_taps; j++)
 	{
-		unsigned n = j * phases + (phase + 1);
-		double window_phase = double(n) / double(phases * taps); /* (0, 1]. */
+		unsigned n = j * phase_count + (phase + 1);
+		double window_phase = double(n) / double(phase_count * num_taps); /* (0, 1]. */
 		window_phase = 2.0 * window_phase - 1.0; /* (-1, 1] */
 		double sinc_phase = sidelobes * window_phase;
 
-		float val = float(cutoff * sinc(PI * sinc_phase * cutoff) * kaiser_window_function(window_phase, beta) / window_mod);
-		float delta = (val - phase_table[phase * stride * taps + j]);
-		phase_table[(phase * stride + 1) * taps + j] = delta;
+		float val = float(cutoff * DSP::sinc(PI * sinc_phase * cutoff) * kaiser_window_function(window_phase, beta) / window_mod);
+		float delta = (val - phase_table[phase * stride * num_taps + j]);
+		phase_table[(phase * stride + 1) * num_taps + j] = delta;
 	}
 }
 
@@ -273,7 +205,7 @@ SincResampler::SincResampler(float out_rate, float in_rate, Quality quality)
 	phase_elems = phase_elems * 2;
 	unsigned elems = phase_elems + 2 * taps;
 
-	main_buffer = (float*)memalign_alloc(128, sizeof(float) * elems);
+	main_buffer = static_cast<float *>(Util::memalign_calloc(128, sizeof(float) * elems));
 	if (!main_buffer)
 		throw std::bad_alloc();
 
@@ -289,7 +221,7 @@ SincResampler::SincResampler(float out_rate, float in_rate, Quality quality)
 
 SincResampler::~SincResampler()
 {
-	memalign_free(main_buffer);
+	Util::memalign_free(main_buffer);
 }
 
 size_t SincResampler::get_maximum_input_for_output_frames(size_t out_frames) const noexcept
@@ -319,20 +251,20 @@ size_t SincResampler::process_and_accumulate(float *output, const float *input, 
 		while (out_frames && time < phases)
 		{
 			const float *buffer = window_buffer + ptr;
-			unsigned taps = this->taps;
+			unsigned num_taps = taps;
 			unsigned phase = time >> subphase_bits;
 
-			const float *phase_table = this->phase_table + phase * taps * 2;
-			const float *delta_table = phase_table + taps;
+			const float *sample_phase_table = phase_table + phase * num_taps * 2;
+			const float *delta_table = sample_phase_table + num_taps;
 
 #ifdef __SSE__
 			__m128 sum = _mm_setzero_ps();
 			__m128 delta = _mm_set1_ps(float(time & subphase_mask) * subphase_mod);
-			for (unsigned i = 0; i < taps; i += 4)
+			for (unsigned i = 0; i < num_taps; i += 4)
 			{
 				__m128 buf = _mm_loadu_ps(buffer + i);
 				__m128 deltas = _mm_load_ps(delta_table + i);
-				__m128 _sinc  = _mm_add_ps(_mm_load_ps(phase_table + i), _mm_mul_ps(deltas, delta));
+				__m128 _sinc  = _mm_add_ps(_mm_load_ps(sample_phase_table + i), _mm_mul_ps(deltas, delta));
 				sum = _mm_add_ps(sum, _mm_mul_ps(buf, _sinc));
 			}
 
@@ -348,8 +280,8 @@ size_t SincResampler::process_and_accumulate(float *output, const float *input, 
 				float32x4_t phases = vld1q_f32(phase_table + i);
 				float32x4_t deltas = vld1q_f32(delta_table + i);
 				float32x4_t buf = vld1q_f32(buffer + i);
-				float32x4_t _sinc = vfmaq_n_f32(phases, deltas, delta);
-				sum = vfmaq_f32(sum, buf, _sinc);
+				float32x4_t _sinc = vmlaq_n_f32(phases, deltas, delta);
+				sum = vmlaq_f32(sum, buf, _sinc);
 			}
 
 			float32x2_t half = vadd_f32(vget_low_f32(sum), vget_high_f32(sum));

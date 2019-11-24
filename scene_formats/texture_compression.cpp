@@ -1,4 +1,4 @@
-/* Copyright (c) 2017-2018 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2019 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -59,8 +59,22 @@ VkFormat string_to_format(const string &s)
 		return VK_FORMAT_BC3_UNORM_BLOCK;
 	else if (s == "bc3_srgb")
 		return VK_FORMAT_BC3_SRGB_BLOCK;
+	else if (s == "bc4_unorm")
+		return VK_FORMAT_BC4_UNORM_BLOCK;
+	else if (s == "bc5_unorm")
+		return VK_FORMAT_BC5_UNORM_BLOCK;
 	else if (s == "rgba8_unorm")
 		return VK_FORMAT_R8G8B8A8_UNORM;
+	else if (s == "rg8_unorm")
+		return VK_FORMAT_R8G8_UNORM;
+	else if (s == "r8_unorm")
+		return VK_FORMAT_R8_UNORM;
+	else if (s == "rgba16_float")
+		return VK_FORMAT_R16G16B16A16_SFLOAT;
+	else if (s == "rg16_float")
+		return VK_FORMAT_R16G16_SFLOAT;
+	else if (s == "r16_float")
+		return VK_FORMAT_R16_SFLOAT;
 	else if (s == "rgba8_srgb")
 		return VK_FORMAT_R8G8B8A8_SRGB;
 	else if (s == "astc_4x4_srgb")
@@ -95,7 +109,7 @@ VkFormat string_to_format(const string &s)
 }
 
 #ifdef HAVE_ISPC
-static unsigned format_to_stride(VkFormat format)
+static unsigned output_format_to_input_stride(VkFormat format)
 {
 	switch (format)
 	{
@@ -151,6 +165,7 @@ struct CompressorState : enable_shared_from_this<CompressorState>
 
 	bool use_astc_encoder = false;
 	bool use_hdr = false;
+	bool force_alpha = false;
 
 	unsigned block_size_x = 1;
 	unsigned block_size_y = 1;
@@ -160,6 +175,8 @@ struct CompressorState : enable_shared_from_this<CompressorState>
 	void enqueue_compression_block_ispc(TaskGroup &group, const CompressorArguments &args, unsigned layer, unsigned level);
 	void enqueue_compression_block_astc(TaskGroup &group, const CompressorArguments &args, unsigned layer, unsigned level, TextureMode mode);
 	void enqueue_compression_block_rgtc(TaskGroup &group, const CompressorArguments &args, unsigned layer, unsigned level);
+	void enqueue_compression_copy_8bit(TaskGroup &group, const CompressorArguments &, unsigned layer, unsigned level);
+	void enqueue_compression_copy_16bit(TaskGroup &group, const CompressorArguments &, unsigned layer, unsigned level);
 
 	double total_error[4] = {};
 	mutex lock;
@@ -168,6 +185,7 @@ struct CompressorState : enable_shared_from_this<CompressorState>
 
 void CompressorState::setup(const CompressorArguments &args)
 {
+	output->set_generate_mipmaps_on_load(args.deferred_mipgen);
 #ifdef HAVE_ISPC
 	bool alpha = args.mode == TextureMode::sRGBA || args.mode == TextureMode::RGBA;
 #endif
@@ -175,15 +193,28 @@ void CompressorState::setup(const CompressorArguments &args)
 
 	const auto is_8bit = [&]() -> bool {
 		return layout.get_format() == VK_FORMAT_R8G8B8A8_SRGB ||
+		       layout.get_format() == VK_FORMAT_R8G8B8A8_UNORM ||
+		       layout.get_format() == VK_FORMAT_R8G8_UNORM ||
+		       layout.get_format() == VK_FORMAT_R8_UNORM;
+	};
+
+#ifdef HAVE_ISPC
+	const auto is_8bit_rgba = [&]() -> bool {
+		return layout.get_format() == VK_FORMAT_R8G8B8A8_SRGB ||
 		       layout.get_format() == VK_FORMAT_R8G8B8A8_UNORM;
 	};
+#endif
 
 	const auto is_unorm = [&]() -> bool {
-		return layout.get_format() == VK_FORMAT_R8G8B8A8_UNORM;
+		return layout.get_format() == VK_FORMAT_R8G8B8A8_UNORM ||
+		       layout.get_format() == VK_FORMAT_R8G8_UNORM ||
+		       layout.get_format() == VK_FORMAT_R8_UNORM;
 	};
 
-	const auto is_16bit = [&]() -> bool {
-		return layout.get_format() == VK_FORMAT_R16G16B16A16_SFLOAT;
+	const auto is_16bit_float = [&]() -> bool {
+		return layout.get_format() == VK_FORMAT_R16G16B16A16_SFLOAT ||
+		       layout.get_format() == VK_FORMAT_R16G16_SFLOAT ||
+		       layout.get_format() == VK_FORMAT_R16_SFLOAT;
 	};
 
 	const auto handle_astc_ldr_format = [&](unsigned x, unsigned y) -> bool {
@@ -191,12 +222,32 @@ void CompressorState::setup(const CompressorArguments &args)
 		block_size_y = y;
 		if (!is_8bit())
 		{
-			LOGE("Input format to ASTC LDR must be RGBA8.\n");
+			LOGE("Input format to ASTC LDR must be 8-bit.\n");
 			return false;
 		}
 
+		if (layout.get_format() == VK_FORMAT_R8_UNORM)
+		{
+			output->set_swizzle({
+					                    VK_COMPONENT_SWIZZLE_R,
+					                    VK_COMPONENT_SWIZZLE_R,
+					                    VK_COMPONENT_SWIZZLE_R,
+					                    VK_COMPONENT_SWIZZLE_R,
+			                    });
+		}
+		else if (layout.get_format() == VK_FORMAT_R8G8_UNORM)
+		{
+			output->set_swizzle({
+					                    VK_COMPONENT_SWIZZLE_R,
+					                    VK_COMPONENT_SWIZZLE_A,
+					                    VK_COMPONENT_SWIZZLE_ZERO,
+					                    VK_COMPONENT_SWIZZLE_ONE,
+			                    });
+			force_alpha = true;
+		}
+
 #ifdef HAVE_ISPC
-		if (alpha)
+		if (alpha || force_alpha)
 		{
 			if (args.quality <= 3)
 				GetProfile_astc_alpha_fast(&astc, x, y);
@@ -214,9 +265,9 @@ void CompressorState::setup(const CompressorArguments &args)
 
 	const auto handle_astc_hdr_format = [&](unsigned x, unsigned y) -> bool {
 #ifdef HAVE_ASTC_ENCODER
-		if (layout.get_format() != VK_FORMAT_R16G16B16A16_SFLOAT)
+		if (!is_16bit_float())
 		{
-			LOGE("Input format to ASTC HDR must be RGBA16F.\n");
+			LOGE("Input format to ASTC HDR must be 16-bit float.\n");
 			return false;
 		}
 		use_astc_encoder = true;
@@ -234,12 +285,21 @@ void CompressorState::setup(const CompressorArguments &args)
 	switch (args.format)
 	{
 	case VK_FORMAT_BC4_UNORM_BLOCK:
+		block_size_x = 4;
+		block_size_y = 4;
+		if (!is_unorm())
+		{
+			LOGE("Input format to bc4 must be UNORM.\n");
+			return;
+		}
+		break;
+
 	case VK_FORMAT_BC5_UNORM_BLOCK:
 		block_size_x = 4;
 		block_size_y = 4;
 		if (!is_unorm())
 		{
-			LOGE("Input format to bc4 must be RGBA8.\n");
+			LOGE("Input format to bc5 must be UNORM.\n");
 			return;
 		}
 		break;
@@ -248,9 +308,9 @@ void CompressorState::setup(const CompressorArguments &args)
 	case VK_FORMAT_BC6H_UFLOAT_BLOCK:
 		block_size_x = 4;
 		block_size_y = 4;
-		if (!is_16bit())
+		if (!is_16bit_float())
 		{
-			LOGE("Input format to bc6h must be RGBA16_SFLOAT.\n");
+			LOGE("Input format to bc6h must be float.\n");
 			return;
 		}
 
@@ -286,44 +346,65 @@ void CompressorState::setup(const CompressorArguments &args)
 	case VK_FORMAT_BC7_UNORM_BLOCK:
 		block_size_x = 4;
 		block_size_y = 4;
+
 		if (!is_8bit())
 		{
-			LOGE("Input format to bc7 must be RGBA8.\n");
+			LOGE("Input format to bc7 must be 8-bit.\n");
 			return;
+		}
+
+		if (layout.get_format() == VK_FORMAT_R8_UNORM)
+		{
+			output->set_swizzle({
+					                    VK_COMPONENT_SWIZZLE_R,
+					                    VK_COMPONENT_SWIZZLE_R,
+					                    VK_COMPONENT_SWIZZLE_R,
+					                    VK_COMPONENT_SWIZZLE_R,
+			                    });
+		}
+		else if (layout.get_format() == VK_FORMAT_R8G8_UNORM)
+		{
+			output->set_swizzle({
+					                    VK_COMPONENT_SWIZZLE_R,
+					                    VK_COMPONENT_SWIZZLE_A,
+					                    VK_COMPONENT_SWIZZLE_ZERO,
+					                    VK_COMPONENT_SWIZZLE_ONE,
+			                    });
+			force_alpha = true;
 		}
 
 		switch (args.quality)
 		{
 		case 1:
-			if (alpha)
+			if (alpha || force_alpha)
 				GetProfile_alpha_ultrafast(&bc7);
 			else
 				GetProfile_ultrafast(&bc7);
 			break;
 
 		case 2:
-			if (alpha)
+			if (alpha || force_alpha)
 				GetProfile_alpha_veryfast(&bc7);
 			else
 				GetProfile_veryfast(&bc7);
 			break;
 
 		case 3:
-			if (alpha)
+			if (alpha || force_alpha)
 				GetProfile_alpha_fast(&bc7);
 			else
 				GetProfile_fast(&bc7);
 			break;
 
 		case 4:
-			if (alpha)
+			if (alpha || force_alpha)
 				GetProfile_alpha_basic(&bc7);
 			else
 				GetProfile_basic(&bc7);
 			break;
 
 		case 5:
-			if (alpha)
+			if (alpha || force_alpha)
 				GetProfile_alpha_slow(&bc7);
 			else
 				GetProfile_slow(&bc7);
@@ -343,7 +424,7 @@ void CompressorState::setup(const CompressorArguments &args)
 	case VK_FORMAT_BC3_UNORM_BLOCK:
 		block_size_x = 4;
 		block_size_y = 4;
-		if (!is_8bit())
+		if (!is_8bit_rgba())
 		{
 			LOGE("Input format to bc1 or bc3 must be RGBA8.\n");
 			return;
@@ -353,7 +434,7 @@ void CompressorState::setup(const CompressorArguments &args)
 
 	case VK_FORMAT_ASTC_4x4_UNORM_BLOCK:
 	case VK_FORMAT_ASTC_4x4_SRGB_BLOCK:
-		if (is_16bit())
+		if (is_16bit_float())
 		{
 			if (!handle_astc_hdr_format(4, 4))
 				return;
@@ -364,7 +445,7 @@ void CompressorState::setup(const CompressorArguments &args)
 
 	case VK_FORMAT_ASTC_5x5_UNORM_BLOCK:
 	case VK_FORMAT_ASTC_5x5_SRGB_BLOCK:
-		if (is_16bit())
+		if (is_16bit_float())
 		{
 			if (!handle_astc_hdr_format(5, 5))
 				return;
@@ -375,7 +456,7 @@ void CompressorState::setup(const CompressorArguments &args)
 
 	case VK_FORMAT_ASTC_6x6_UNORM_BLOCK:
 	case VK_FORMAT_ASTC_6x6_SRGB_BLOCK:
-		if (is_16bit())
+		if (is_16bit_float())
 		{
 			if (!handle_astc_hdr_format(6, 6))
 				return;
@@ -386,7 +467,7 @@ void CompressorState::setup(const CompressorArguments &args)
 
 	case VK_FORMAT_ASTC_8x8_UNORM_BLOCK:
 	case VK_FORMAT_ASTC_8x8_SRGB_BLOCK:
-		if (is_16bit())
+		if (is_16bit_float())
 		{
 			if (!handle_astc_hdr_format(8, 8))
 				return;
@@ -397,6 +478,13 @@ void CompressorState::setup(const CompressorArguments &args)
 
 	case VK_FORMAT_R8G8B8A8_UNORM:
 	case VK_FORMAT_R8G8B8A8_SRGB:
+	case VK_FORMAT_R8G8_UNORM:
+	case VK_FORMAT_R8_UNORM:
+		break;
+
+	case VK_FORMAT_R16G16B16A16_SFLOAT:
+	case VK_FORMAT_R16G16_SFLOAT:
+	case VK_FORMAT_R16_SFLOAT:
 		break;
 
 	default:
@@ -405,11 +493,72 @@ void CompressorState::setup(const CompressorArguments &args)
 	}
 }
 
+void CompressorState::enqueue_compression_copy_16bit(TaskGroup &group, const CompressorArguments &,
+                                                     unsigned layer, unsigned level)
+{
+	group->enqueue_task([=]() {
+		auto &input_layout = input->get_layout();
+		auto &output_layout = output->get_layout();
+		auto input_stride = input_layout.get_block_stride();
+		auto output_stride = output_layout.get_block_stride();
+
+		u16vec4 tmp(0, 0, 0, floatToHalf(1.0f));
+		if (input_stride <= sizeof(u16vec4) && output_stride <= sizeof(u16vec4))
+		{
+			unsigned width = input_layout.get_width(level);
+			unsigned height = input_layout.get_height(level);
+
+			for (unsigned y = 0; y < height; y++)
+			{
+				for (unsigned x = 0; x < width; x++)
+				{
+					void *output_opaque = output_layout.data_opaque(x, y, layer, level);
+					void *input_opaque = input_layout.data_opaque(x, y, layer, level);
+					memcpy(tmp.data, input_opaque, input_stride);
+					memcpy(output_opaque, tmp.data, output_stride);
+				}
+			}
+		}
+		else
+			LOGE("Format is not as expected.\n");
+	});
+}
+
+void CompressorState::enqueue_compression_copy_8bit(TaskGroup &group, const CompressorArguments &,
+                                                    unsigned layer, unsigned level)
+{
+	group->enqueue_task([=]() {
+		auto &input_layout = input->get_layout();
+		auto &output_layout = output->get_layout();
+		auto input_stride = input_layout.get_block_stride();
+		auto output_stride = output_layout.get_block_stride();
+
+		if (input_stride <= sizeof(u8vec4) && output_stride <= sizeof(u8vec4))
+		{
+			unsigned width = input_layout.get_width(level);
+			unsigned height = input_layout.get_height(level);
+			u8vec4 tmp(0, 0, 0, 255);
+
+			for (unsigned y = 0; y < height; y++)
+			{
+				for (unsigned x = 0; x < width; x++)
+				{
+					void *output_opaque = output_layout.data_opaque(x, y, layer, level);
+					void *input_opaque = input_layout.data_opaque(x, y, layer, level);
+					memcpy(tmp.data, input_opaque, input_stride);
+					memcpy(output_opaque, tmp.data, output_stride);
+				}
+			}
+		}
+		else
+			LOGE("Format is not as expected.\n");
+	});
+}
+
 void CompressorState::enqueue_compression_block_rgtc(TaskGroup &group, const CompressorArguments &args, unsigned layer, unsigned level)
 {
-	auto &layout = input->get_layout();
-	int width = layout.get_width(level);
-	int height = layout.get_height(level);
+	int width = input->get_layout().get_width(level);
+	int height = input->get_layout().get_height(level);
 	int blocks_x = (width + block_size_x - 1) / block_size_x;
 
 	for (int y = 0; y < height; y += block_size_y)
@@ -417,9 +566,11 @@ void CompressorState::enqueue_compression_block_rgtc(TaskGroup &group, const Com
 		for (int x = 0; x < width; x += block_size_x)
 		{
 			group->enqueue_task([=, format = args.format]() {
+				auto &layout = input->get_layout();
 				uint8_t padded_red[4 * 4];
 				uint8_t padded_green[4 * 4];
 				auto *src = static_cast<const uint8_t *>(layout.data(layer, level));
+				unsigned pixel_stride = layout.get_block_stride();
 
 				const auto get_block_data = [&](int block_size) -> uint8_t * {
 					auto *dst = static_cast<uint8_t *>(output->get_layout().data(layer, level));
@@ -435,7 +586,7 @@ void CompressorState::enqueue_compression_block_rgtc(TaskGroup &group, const Com
 				const auto get_component = [&](int sx, int sy, int c) -> uint8_t {
 					sx = std::min(sx, width - 1);
 					sy = std::min(sy, height - 1);
-					return src[4 * (sy * width + sx) + c];
+					return src[pixel_stride * (sy * width + sx) + c];
 				};
 
 				for (int sy = 0; sy < 4; sy++)
@@ -443,7 +594,8 @@ void CompressorState::enqueue_compression_block_rgtc(TaskGroup &group, const Com
 					for (int sx = 0; sx < 4; sx++)
 					{
 						padded_red[sy * 4 + sx] = get_component(x + sx, y + sy, 0);
-						padded_green[sy * 4 + sx] = get_component(x + sx, y + sy, 1);
+						if (pixel_stride > 1)
+							padded_green[sy * 4 + sx] = get_component(x + sx, y + sy, 1);
 					}
 				}
 
@@ -508,9 +660,8 @@ void CompressorState::enqueue_compression_block_rgtc(TaskGroup &group, const Com
 void CompressorState::enqueue_compression_block_ispc(TaskGroup &group, const CompressorArguments &args,
                                                      unsigned layer, unsigned level)
 {
-	auto &layout = input->get_layout();
-	int width = layout.get_width(level);
-	int height = layout.get_height(level);
+	int width = input->get_layout().get_width(level);
+	int height = input->get_layout().get_height(level);
 	int grid_stride_x = (32 / block_size_x) * block_size_x;
 	int grid_stride_y = (32 / block_size_y) * block_size_y;
 
@@ -519,14 +670,94 @@ void CompressorState::enqueue_compression_block_ispc(TaskGroup &group, const Com
 		for (int x = 0; x < width; x += grid_stride_x)
 		{
 			group->enqueue_task([=, format = args.format]() {
+				auto &layout = input->get_layout();
 				uint8_t padded_buffer[32 * 32 * 8];
+
+				union
+				{
+					u8vec4 splat_buffer8[32 * 32];
+					u16vec4 splat_buffer16[32 * 32];
+				};
+
 				uint8_t encode_buffer[16 * 8 * 8];
 				rgba_surface surface = {};
-				surface.ptr = const_cast<uint8_t *>(static_cast<const uint8_t *>(layout.data(layer, level)));
-				surface.width = std::min(width - x, grid_stride_x);
-				surface.height = std::min(height - y, grid_stride_y);
-				surface.stride = width * format_to_stride(format);
-				surface.ptr += y * surface.stride + x * format_to_stride(format);
+
+				auto format_stride = output_format_to_input_stride(format);
+				if (layout.get_block_stride() == format_stride)
+				{
+					surface.ptr = const_cast<uint8_t *>(static_cast<const uint8_t *>(layout.data(layer, level)));
+					surface.width = std::min(width - x, grid_stride_x);
+					surface.height = std::min(height - y, grid_stride_y);
+					surface.stride = width * output_format_to_input_stride(format);
+					surface.ptr += y * surface.stride + x * output_format_to_input_stride(format);
+				}
+				else
+				{
+					// Need to pad out format to 4 components,
+					// 2 components are transformed to LA8 for optimal compression
+					// (except for BC6H which is only 3 components).
+					// 1 component is transformed to I8.
+
+					surface.width = std::min(width - x, grid_stride_x);
+					surface.height = std::min(height - y, grid_stride_y);
+					surface.stride = surface.width * output_format_to_input_stride(format);
+					surface.ptr = splat_buffer8[0].data;
+
+					if (layout.get_block_stride() == 2 && layout.get_format() == VK_FORMAT_R8G8_UNORM)
+					{
+						for (int sy = 0; sy < surface.height; sy++)
+						{
+							for (int sx = 0; sx < surface.width; sx++)
+							{
+								auto *ptr = &splat_buffer8[sy * surface.width + sx];
+								auto *v = layout.data_2d<u8vec2>(x + sx, y + sy, layer, level);
+								ptr->x = v->x;
+								ptr->y = v->x;
+								ptr->z = v->x;
+								ptr->w = v->y;
+							}
+						}
+					}
+					else if (layout.get_block_stride() == 1 && layout.get_format() == VK_FORMAT_R8_UNORM)
+					{
+						for (int sy = 0; sy < surface.height; sy++)
+						{
+							for (int sx = 0; sx < surface.width; sx++)
+							{
+								auto *ptr = &splat_buffer8[sx * surface.width + sy];
+								auto *v = layout.data_2d<uint8_t>(x + sx, y + sy, layer, level);
+								*ptr = u8vec4(*v);
+							}
+						}
+					}
+					else if (layout.get_block_stride() == 2 && layout.get_format() == VK_FORMAT_R16_SFLOAT)
+					{
+						for (int sy = 0; sy < surface.height; sy++)
+						{
+							for (int sx = 0; sx < surface.width; sx++)
+							{
+								auto *ptr = &splat_buffer16[sy * surface.width + sx];
+								auto *v = layout.data_2d<uint16_t>(x + sx, y + sy, layer, level);
+								*ptr = u16vec4(*v);
+							}
+						}
+					}
+					else if (layout.get_block_stride() == 4 && layout.get_format() == VK_FORMAT_R16G16_SFLOAT)
+					{
+						for (int sy = 0; sy < surface.height; sy++)
+						{
+							for (int sx = 0; sx < surface.width; sx++)
+							{
+								auto *ptr = &splat_buffer16[sy * surface.width + sx];
+								auto *v = layout.data_2d<u16vec2>(x + sx, y + sy, layer, level);
+								ptr->x = v->x;
+								ptr->y = v->y;
+								ptr->z = 0;
+								ptr->w = 0;
+							}
+						}
+					}
+				}
 
 				rgba_surface padded_surface = {};
 
@@ -556,9 +787,9 @@ void CompressorState::enqueue_compression_block_ispc(TaskGroup &group, const Com
 				{
 					padded_surface.width = num_blocks_x * block_size_x;
 					padded_surface.height = num_blocks_y * block_size_y;
-					padded_surface.stride = padded_surface.width * format_to_stride(format);
+					padded_surface.stride = padded_surface.width * output_format_to_input_stride(format);
 					padded_surface.ptr = padded_buffer;
-					ReplicateBorders(&padded_surface, &surface, 0, 0, format_to_stride(format) * 8);
+					ReplicateBorders(&padded_surface, &surface, 0, 0, output_format_to_input_stride(format) * 8);
 				}
 				else
 					padded_surface = surface;
@@ -650,7 +881,7 @@ void CompressorState::enqueue_compression_block_astc(TaskGroup &compression_task
 	state->ewp.rgba_weights[1] = 1.0f;
 	state->ewp.rgba_weights[2] = 1.0f;
 
-	if (mode == TextureMode::sRGBA || mode == TextureMode::RGBA)
+	if (mode == TextureMode::sRGBA || mode == TextureMode::RGBA || force_alpha)
 		state->ewp.rgba_weights[3] = 1.0f;
 	else
 		state->ewp.rgba_weights[3] = 0.0f;
@@ -734,16 +965,58 @@ void CompressorState::enqueue_compression_block_astc(TaskGroup &compression_task
 	for (int y = 1; y < eysize; y++)
 		state->rows[y] = state->rows[0] + y * exsize * estride;
 
+	auto input_format = input->get_layout().get_format();
 	for (int y = 0; y < eysize; y++)
 	{
 		for (int x = 0; x < exsize; x++)
 		{
 			int dst_offset = x + y * exsize;
-			int src_offset = clamp(x - state->astc_image.padding, 0, state->astc_image.xsize - 1) +
-			                 clamp(y - state->astc_image.padding, 0, state->astc_image.ysize - 1) * state->astc_image.xsize;
+			int cx = clamp(x - state->astc_image.padding, 0, state->astc_image.xsize - 1);
+			int cy = clamp(y - state->astc_image.padding, 0, state->astc_image.ysize - 1);
 
-			auto *src = static_cast<const uint8_t *>(input->get_layout().data(layer, level));
-			memcpy(&state->buffer[dst_offset * estride], &src[src_offset * estride], estride);
+			if (input_format == VK_FORMAT_R16G16B16A16_SFLOAT ||
+			    input_format == VK_FORMAT_R8G8B8A8_UNORM ||
+			    input_format == VK_FORMAT_R8G8B8A8_SRGB)
+			{
+				auto *src = input->get_layout().data_opaque(cx, cy, layer, level);
+				memcpy(&state->buffer[dst_offset * estride], src, estride);
+			}
+			else if (input_format == VK_FORMAT_R8G8_UNORM)
+			{
+				auto *src = input->get_layout().data_2d<u8vec2>(cx, cy, layer, level);
+				uint8_t *dst = &state->buffer[dst_offset * estride];
+				dst[0] = src->x;
+				dst[1] = src->x;
+				dst[2] = src->x;
+				dst[3] = src->y;
+			}
+			else if (input_format == VK_FORMAT_R16G16_SFLOAT)
+			{
+				auto *src = input->get_layout().data_2d<u16vec2>(cx, cy, layer, level);
+				auto *dst = reinterpret_cast<uint16_t *>(&state->buffer[dst_offset * estride]);
+				dst[0] = src->x;
+				dst[1] = src->x;
+				dst[2] = src->x;
+				dst[3] = src->y;
+			}
+			else if (input_format == VK_FORMAT_R8_UNORM)
+			{
+				auto *src = input->get_layout().data_2d<uint8_t>(cx, cy, layer, level);
+				uint8_t *dst = &state->buffer[dst_offset * estride];
+				dst[0] = *src;
+				dst[1] = *src;
+				dst[2] = *src;
+				dst[3] = *src;
+			}
+			else if (input_format == VK_FORMAT_R16_SFLOAT)
+			{
+				auto *src = input->get_layout().data_2d<uint16_t>(cx, cy, layer, level);
+				auto *dst = reinterpret_cast<uint16_t *>(&state->buffer[dst_offset * estride]);
+				dst[0] = *src;
+				dst[1] = *src;
+				dst[2] = *src;
+				dst[3] = *src;
+			}
 		}
 	}
 
@@ -814,7 +1087,6 @@ void CompressorState::enqueue_compression(ThreadGroup &group, const CompressorAr
 				enqueue_compression_block_rgtc(compression_task, args, layer, level);
 				break;
 
-#ifdef HAVE_ISPC
 			case VK_FORMAT_BC6H_UFLOAT_BLOCK:
 			case VK_FORMAT_BC7_SRGB_BLOCK:
 			case VK_FORMAT_BC7_UNORM_BLOCK:
@@ -824,9 +1096,10 @@ void CompressorState::enqueue_compression(ThreadGroup &group, const CompressorAr
 			case VK_FORMAT_BC1_RGBA_UNORM_BLOCK:
 			case VK_FORMAT_BC3_SRGB_BLOCK:
 			case VK_FORMAT_BC3_UNORM_BLOCK:
+#ifdef HAVE_ISPC
 				enqueue_compression_block_ispc(compression_task, args, layer, level);
-				break;
 #endif
+				break;
 
 			case VK_FORMAT_ASTC_4x4_SRGB_BLOCK:
 			case VK_FORMAT_ASTC_4x4_UNORM_BLOCK:
@@ -848,8 +1121,21 @@ void CompressorState::enqueue_compression(ThreadGroup &group, const CompressorAr
 				}
 				break;
 
+			case VK_FORMAT_R8G8B8A8_SRGB:
+			case VK_FORMAT_R8G8B8A8_UNORM:
+			case VK_FORMAT_R8G8_UNORM:
+			case VK_FORMAT_R8_UNORM:
+				enqueue_compression_copy_8bit(compression_task, args, layer, level);
+				break;
+
+			case VK_FORMAT_R16G16B16A16_SFLOAT:
+			case VK_FORMAT_R16G16_SFLOAT:
+			case VK_FORMAT_R16_SFLOAT:
+				enqueue_compression_copy_16bit(compression_task, args, layer, level);
+				break;
+
 			default:
-				return;
+				break;
 			}
 		}
 	}
@@ -906,6 +1192,8 @@ void compress_texture(ThreadGroup &group, const CompressorArguments &args, const
 		if (!output->output->map_write(args.output))
 		{
 			LOGE("Failed to map output texture for writing.\n");
+			if (output->signal)
+				output->signal->signal_increment();
 			return;
 		}
 

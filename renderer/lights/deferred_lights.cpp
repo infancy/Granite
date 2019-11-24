@@ -1,4 +1,4 @@
-/* Copyright (c) 2017-2018 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2019 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -81,15 +81,15 @@ void DeferredLights::refresh(RenderContext &context)
 	}
 }
 
-void DeferredLights::set_scene(Scene *scene)
+void DeferredLights::set_scene(Scene *scene_)
 {
-	this->scene = scene;
+	scene = scene_;
 }
 
-void DeferredLights::set_renderers(Renderer *depth_renderer, Renderer *deferred_renderer)
+void DeferredLights::set_renderers(Renderer *depth_renderer_, Renderer *deferred_renderer_)
 {
-	this->depth_renderer = depth_renderer;
-	this->deferred_renderer = deferred_renderer;
+	depth_renderer = depth_renderer_;
+	deferred_renderer = deferred_renderer_;
 }
 
 void DeferredLights::render_prepass_lights(Vulkan::CommandBuffer &cmd, RenderContext &context)
@@ -103,9 +103,9 @@ void DeferredLights::render_prepass_lights(Vulkan::CommandBuffer &cmd, RenderCon
 		depth_renderer->push_depth_renderables(context, clusters[cluster]);
 		depth_renderer->set_stencil_reference(0xff, 2 << cluster, 2 << cluster);
 		depth_renderer->flush(cmd, context,
-		                      Renderer::NO_COLOR |
+		                      Renderer::NO_COLOR_BIT |
 		                      Renderer::BACKFACE_BIT |
-		                      Renderer::DEPTH_STENCIL_READ_ONLY |
+		                      Renderer::DEPTH_STENCIL_READ_ONLY_BIT |
 		                      Renderer::STENCIL_WRITE_REFERENCE_BIT);
 	}
 }

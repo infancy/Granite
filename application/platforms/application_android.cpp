@@ -1,4 +1,4 @@
-/* Copyright (c) 2017-2018 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2019 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -25,7 +25,7 @@
 #include "application.hpp"
 #include "application_events.hpp"
 #include "application_wsi.hpp"
-#include "vulkan.hpp"
+#include "context.hpp"
 #include <jni.h>
 #include <android/sensor.h>
 
@@ -34,8 +34,11 @@
 #include "rapidjson_wrapper.hpp"
 #include "muglm/muglm_impl.hpp"
 
-#ifdef HAVE_GRANITE_AUDIO
+#ifdef AUDIO_HAVE_OPENSL
 #include "audio_opensl.hpp"
+#endif
+#ifdef AUDIO_HAVE_OBOE
+#include "audio_oboe.hpp"
 #endif
 
 using namespace std;
@@ -45,6 +48,8 @@ using namespace Vulkan;
 
 namespace Granite
 {
+uint32_t android_api_version;
+
 void application_dummy()
 {
 }
@@ -54,9 +59,11 @@ struct GlobalState
 	android_app *app;
 	int32_t base_width;
 	int32_t base_height;
-	int orientation;
+	int display_rotation;
+	int surface_orientation;
 	bool has_window;
 	bool active;
+	bool content_rect_changed;
 };
 
 struct JNI
@@ -68,6 +75,7 @@ struct JNI
 	jmethodID getAudioNativeSampleRate;
 	jmethodID getAudioNativeBlockFrames;
 	jmethodID getCommandLineArgument;
+	jmethodID getCurrentOrientation;
 	jclass classLoaderClass;
 	jobject classLoader;
 
@@ -82,6 +90,14 @@ struct JNI
 };
 static GlobalState global_state;
 static JNI jni;
+
+static void on_content_rect_changed(ANativeActivity *, const ARect *rect)
+{
+	global_state.base_width = rect->right - rect->left;
+	global_state.base_height = rect->bottom - rect->top;
+	global_state.content_rect_changed = true;
+	LOGI("Got content rect: %d x %d\n", global_state.base_width, global_state.base_height);
+}
 
 namespace App
 {
@@ -128,24 +144,57 @@ static int getAudioNativeBlockFrames()
 	return ret;
 }
 #endif
+
+static int getCurrentOrientation()
+{
+	int ret = jni.env->CallIntMethod(global_state.app->activity->clazz, jni.getCurrentOrientation);
+	return ret;
+}
+
+static int getDisplayRotation()
+{
+	int ret = jni.env->CallIntMethod(global_state.app->activity->clazz, jni.getDisplayRotation);
+	return ret;
+}
 }
 
 struct WSIPlatformAndroid : Granite::GraniteWSIPlatform
 {
-	WSIPlatformAndroid(unsigned width, unsigned height)
-		: width(width), height(height)
+	bool init(unsigned width_, unsigned height_)
 	{
+		width = width_;
+		height = height_;
 		if (!Vulkan::Context::init_loader(nullptr))
-			throw runtime_error("Failed to init Vulkan loader.");
+		{
+			LOGE("Failed to init Vulkan loader.\n");
+			return false;
+		}
 
+		get_input_tracker().set_touch_resolution(width, height);
 		has_window = global_state.has_window;
 		active = global_state.active;
 
-		get_input_tracker().set_touch_resolution(width, height);
 		for (auto &id : gamepad_ids)
 			id = -1;
+
+		return true;
 	}
 
+	void event_swapchain_created(Device *device_, unsigned width_, unsigned height_, float aspect_, size_t count_, VkFormat format_, VkSurfaceTransformFlagBitsKHR transform_) override
+	{
+		Granite::GraniteWSIPlatform::event_swapchain_created(device_, width_, height_, aspect_, count_, format_, transform_);
+
+		if (transform_ & (VK_SURFACE_TRANSFORM_ROTATE_90_BIT_KHR |
+		                  VK_SURFACE_TRANSFORM_ROTATE_270_BIT_KHR |
+		                  VK_SURFACE_TRANSFORM_HORIZONTAL_MIRROR_ROTATE_90_BIT_KHR |
+		                  VK_SURFACE_TRANSFORM_HORIZONTAL_MIRROR_ROTATE_270_BIT_KHR))
+		{
+			swap(width_, height_);
+		}
+		get_input_tracker().set_touch_resolution(width_, height_);
+	}
+
+	void update_orientation();
 	bool alive(Vulkan::WSI &wsi) override;
 	void poll_input() override;
 
@@ -227,13 +276,14 @@ struct WSIPlatformAndroid : Granite::GraniteWSIPlatform
 
 	unsigned width, height;
 	Application *app = nullptr;
-	Vulkan::WSI *wsi = nullptr;
+	Vulkan::WSI *app_wsi = nullptr;
 	bool active = false;
 	bool has_window = true;
 	bool wsi_idle = false;
 
 	bool pending_native_window_init = false;
 	bool pending_native_window_term = false;
+	bool pending_config_change = false;
 	int32_t gamepad_ids[InputTracker::Joypads];
 	GamepadInfo gamepad_info[InputTracker::Joypads];
 };
@@ -328,15 +378,15 @@ static void handle_sensors()
 			if (event.type == SENSOR_GAME_ROTATION_VECTOR)
 			{
 				quat q(event.data[3], -event.data[0], -event.data[1], -event.data[2]);
-				if (global_state.orientation == 1)
+				if (global_state.display_rotation == 1)
 				{
 					// Compensate for different display rotation.
 					swap(q.x, q.y);
 					q.x = -q.x;
 				}
-				else if (global_state.orientation == 2 || global_state.orientation == 3)
+				else if (global_state.display_rotation == 2 || global_state.display_rotation == 3)
 				{
-					LOGE("Untested orientation %u!\n", global_state.orientation);
+					//LOGE("Untested orientation %u!\n", global_state.display_rotation);
 				}
 
 				static const quat landscape(muglm::one_over_root_two<float>(), muglm::one_over_root_two<float>(), 0.0f, 0.0f);
@@ -435,11 +485,11 @@ static int32_t engine_handle_input(android_app *app, AInputEvent *event)
 			case AMOTION_EVENT_ACTION_MOVE:
 			{
 				size_t count = AMotionEvent_getPointerCount(event);
-				for (size_t index = 0; index < count; index++)
+				for (size_t i = 0; i < count; i++)
 				{
-					auto x = AMotionEvent_getX(event, index) / global_state.base_width;
-					auto y = AMotionEvent_getY(event, index) / global_state.base_height;
-					int id = AMotionEvent_getPointerId(event, index);
+					auto x = AMotionEvent_getX(event, i) / global_state.base_width;
+					auto y = AMotionEvent_getY(event, i) / global_state.base_height;
+					int id = AMotionEvent_getPointerId(event, i);
 					state.get_input_tracker().on_touch_move(id, x, y);
 				}
 				state.get_input_tracker().dispatch_touch_gesture();
@@ -524,9 +574,12 @@ static void engine_handle_cmd_init(android_app *app, int32_t cmd)
 			global_state.base_height = ANativeWindow_getHeight(app->window);
 		}
 
-		global_state.orientation = jni.env->CallIntMethod(app->activity->clazz, jni.getDisplayRotation);
+		global_state.display_rotation = jni.env->CallIntMethod(app->activity->clazz, jni.getDisplayRotation);
 		break;
 	}
+
+	default:
+		break;
 	}
 }
 
@@ -589,30 +642,40 @@ static void engine_handle_cmd(android_app *app, int32_t cmd)
 		if (app->window != nullptr)
 		{
 			state.has_window = true;
+			LOGI("New window size %d x %d\n", global_state.base_width, global_state.base_height);
 			global_state.base_width = ANativeWindow_getWidth(app->window);
 			global_state.base_height = ANativeWindow_getHeight(app->window);
-			LOGI("New window size %d x %d\n", global_state.base_width, global_state.base_height);
+			global_state.content_rect_changed = false;
 
-			if (state.wsi)
+			if (state.app_wsi)
 			{
-				LOGI("Lifecycle init window\n");
-				auto surface = create_surface_from_native_window(state.wsi->get_context().get_instance(), app->window);
-				state.wsi->init_surface_and_swapchain(surface);
+				LOGI("Lifecycle init window.\n");
+				auto surface = create_surface_from_native_window(state.app_wsi->get_context().get_instance(), app->window);
+				state.app_wsi->init_surface_and_swapchain(surface);
 			}
 			else
+			{
+				LOGI("Pending init window.\n");
 				state.pending_native_window_init = true;
+			}
 		}
 		break;
 
 	case APP_CMD_TERM_WINDOW:
 		state.has_window = false;
-		if (state.wsi)
+		if (state.app_wsi)
 		{
-			LOGI("Lifecycle deinit window\n");
-			state.wsi->deinit_surface_and_swapchain();
+			LOGI("Lifecycle deinit window.\n");
+			state.app_wsi->deinit_surface_and_swapchain();
 		}
 		else
+		{
+			LOGI("Pending deinit window.\n");
 			state.pending_native_window_term = true;
+		}
+		break;
+
+	default:
 		break;
 	}
 }
@@ -622,13 +685,24 @@ VkSurfaceKHR WSIPlatformAndroid::create_surface(VkInstance instance, VkPhysicalD
 	return create_surface_from_native_window(instance, global_state.app->window);
 }
 
+void WSIPlatformAndroid::update_orientation()
+{
+	// Apparently, AConfiguration_getOrientation is broken in latest Android versions.
+	// Gotta use JNI. Sigh ........
+	global_state.surface_orientation = App::getCurrentOrientation();
+	global_state.display_rotation = App::getDisplayRotation();
+	LOGI("Got new orientation: %d\n", global_state.surface_orientation);
+	LOGI("Got new rotation: %d\n", global_state.display_rotation);
+	LOGI("Got new resolution: %d x %d\n", global_state.base_width, global_state.base_height);
+	pending_config_change = true;
+}
+
 void WSIPlatformAndroid::poll_input()
 {
-	auto &state = *static_cast<WSIPlatformAndroid *>(global_state.app->userData);
 	int events;
 	int ident;
 	android_poll_source *source;
-	state.wsi = nullptr;
+	app_wsi = nullptr;
 	while ((ident = ALooper_pollAll(1, nullptr, &events, reinterpret_cast<void **>(&source))) >= 0)
 	{
 		if (source)
@@ -640,8 +714,7 @@ void WSIPlatformAndroid::poll_input()
 		if (global_state.app->destroyRequested)
 			return;
 	}
-
-	state.get_input_tracker().dispatch_current_state(state.get_frame_timer().get_frame_time());
+	get_input_tracker().dispatch_current_state(get_frame_timer().get_frame_time());
 }
 
 bool WSIPlatformAndroid::alive(Vulkan::WSI &wsi)
@@ -650,12 +723,25 @@ bool WSIPlatformAndroid::alive(Vulkan::WSI &wsi)
 	int events;
 	int ident;
 	android_poll_source *source;
-	state.wsi = &wsi;
+	state.app_wsi = &wsi;
 
 	if (global_state.app->destroyRequested)
 		return false;
 
 	bool once = false;
+
+	if (global_state.content_rect_changed)
+	{
+		update_orientation();
+		global_state.content_rect_changed = false;
+	}
+
+	if (state.pending_config_change)
+	{
+		state.pending_native_window_term = true;
+		state.pending_native_window_init = true;
+		state.pending_config_change = false;
+	}
 
 	const auto flush_pending = [&]() {
 		if (state.pending_native_window_term)
@@ -737,6 +823,7 @@ static void init_jni()
 	jni.getDisplayRotation = jni.env->GetMethodID(jni.granite, "getDisplayRotation", "()I");
 	jni.getAudioNativeSampleRate = jni.env->GetMethodID(jni.granite, "getAudioNativeSampleRate", "()I");
 	jni.getAudioNativeBlockFrames = jni.env->GetMethodID(jni.granite, "getAudioNativeBlockFrames", "()I");
+	jni.getCurrentOrientation = jni.env->GetMethodID(jni.granite, "getCurrentOrientation", "()I");
 	jni.getCommandLineArgument = jni.env->GetMethodID(jni.granite, "getCommandLineArgument", "(Ljava/lang/String;)Ljava/lang/String;");
 
 	if (jni.inputDeviceClass)
@@ -754,7 +841,12 @@ static void init_jni()
 #ifdef HAVE_GRANITE_AUDIO
 	int sample_rate = App::getAudioNativeSampleRate();
 	int block_frames = App::getAudioNativeBlockFrames();
+#ifdef AUDIO_HAVE_OPENSL
 	Granite::Audio::set_opensl_low_latency_parameters(sample_rate, block_frames);
+#endif
+#ifdef AUDIO_HAVE_OBOE
+	Granite::Audio::set_oboe_low_latency_parameters(sample_rate, block_frames);
+#endif
 #endif
 }
 
@@ -808,6 +900,11 @@ void android_main(android_app *app)
 #pragma GCC diagnostic ignored "-Wdeprecated"
 	app_dummy();
 #pragma GCC diagnostic pop
+
+	// Native glue does not implement this.
+	app->activity->callbacks->onContentRectChanged = on_content_rect_changed;
+
+	android_api_version = uint32_t(app->activity->sdkVersion);
 
 	// Statics on Android might not be cleared out.
 	global_state = {};
@@ -881,8 +978,11 @@ void android_main(android_app *app)
 			if (ident == LOOPER_ID_USER)
 				handle_sensors();
 
-			if (Granite::global_state.has_window)
+			if (Granite::global_state.has_window && Granite::global_state.content_rect_changed)
 			{
+				Granite::global_state.content_rect_changed = false;
+				global_state.surface_orientation = AConfiguration_getOrientation(app->config);
+				LOGI("Get initial orientation: %d\n", global_state.surface_orientation);
 				app->onAppCmd = Granite::engine_handle_cmd;
 
 				try
@@ -911,16 +1011,24 @@ void android_main(android_app *app)
 					int ret;
 					if (app_handle)
 					{
-						auto platform = make_unique<Granite::WSIPlatformAndroid>(width, height);
-						global_state.app->userData = platform.get();
-						if (!app_handle->init_wsi(move(platform)))
-							ret = 1;
-						else
+						// TODO: Configurable.
+						app_handle->get_wsi().set_support_prerotate(true);
+
+						auto platform = make_unique<Granite::WSIPlatformAndroid>();
+						if (platform->init(width, height))
 						{
-							while (app_handle->poll())
-								app_handle->run_frame();
-							ret = 0;
+							global_state.app->userData = platform.get();
+							if (!app_handle->init_wsi(move(platform)))
+								ret = 1;
+							else
+							{
+								while (app_handle->poll())
+									app_handle->run_frame();
+								ret = 0;
+							}
 						}
+						else
+							ret = 1;
 					}
 					else
 					{

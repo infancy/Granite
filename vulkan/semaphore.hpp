@@ -1,4 +1,4 @@
-/* Copyright (c) 2017-2018 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2019 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -23,7 +23,7 @@
 #pragma once
 
 #include "vulkan_common.hpp"
-#include "vulkan.hpp"
+#include "vulkan_headers.hpp"
 #include "cookie.hpp"
 #include "object_pool.hpp"
 
@@ -55,6 +55,11 @@ public:
 		return signalled;
 	}
 
+	uint64_t get_timeline_value() const
+	{
+		return timeline;
+	}
+
 	VkSemaphore consume()
 	{
 		auto ret = semaphore;
@@ -76,6 +81,13 @@ public:
 	bool can_recycle() const
 	{
 		return !should_destroy_on_consume;
+	}
+
+	void wait_external()
+	{
+		VK_ASSERT(semaphore);
+		VK_ASSERT(signalled);
+		signalled = false;
 	}
 
 	void signal_external()
@@ -102,15 +114,23 @@ public:
 
 private:
 	friend class Util::ObjectPool<SemaphoreHolder>;
-	SemaphoreHolder(Device *device, VkSemaphore semaphore, bool signalled)
-	    : device(device)
-	    , semaphore(semaphore)
-	    , signalled(signalled)
+	SemaphoreHolder(Device *device_, VkSemaphore semaphore_, bool signalled_)
+		: device(device_)
+		, semaphore(semaphore_)
+		, timeline(0)
+		, signalled(signalled_)
 	{
+	}
+
+	SemaphoreHolder(Device *device_, uint64_t timeline_, VkSemaphore semaphore_)
+		: device(device_), semaphore(semaphore_), timeline(timeline_)
+	{
+		VK_ASSERT(timeline > 0);
 	}
 
 	Device *device;
 	VkSemaphore semaphore;
+	uint64_t timeline;
 	bool signalled = true;
 	bool pending = false;
 	bool should_destroy_on_consume = false;

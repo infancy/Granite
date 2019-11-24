@@ -1,4 +1,4 @@
-/* Copyright (c) 2017-2018 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2019 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -23,12 +23,17 @@
 #include "application.hpp"
 #include "application_wsi.hpp"
 #include "application_events.hpp"
-#include "vulkan.hpp"
+#include "vulkan_headers.hpp"
 #include "GLFW/glfw3.h"
 #ifdef HAVE_LINUX_INPUT
 #include "input_linux.hpp"
 #elif defined(HAVE_XINPUT_WINDOWS)
 #include "xinput_windows.hpp"
+#endif
+
+#ifdef _WIN32
+#define GLFW_EXPOSE_NATIVE_WIN32
+#include "GLFW/glfw3native.h"
 #endif
 
 using namespace std;
@@ -51,14 +56,21 @@ static VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL GetInstanceProcAddr(VkInstance i
 struct WSIPlatformGLFW : GraniteWSIPlatform
 {
 public:
-	WSIPlatformGLFW(unsigned width, unsigned height)
-		: width(width), height(height)
+	bool init(unsigned width_, unsigned height_)
 	{
+		width = width_;
+		height = height_;
 		if (!glfwInit())
-			throw runtime_error("Failed to initialize GLFW.");
+		{
+			LOGE("Failed to initialize GLFW.\n");
+			return false;
+		}
 
 		if (!Context::init_loader(GetInstanceProcAddr))
-			throw runtime_error("Failed to initialize Vulkan loader.");
+		{
+			LOGE("Failed to initialize Vulkan loader.\n");
+			return false;
+		}
 
 		glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
 		window = glfwCreateWindow(width, height, "GLFW Window", nullptr, nullptr);
@@ -88,6 +100,7 @@ public:
 		if (!input_manager.init(&get_input_tracker()))
 			LOGE("Failed to initialize input manager.\n");
 #endif
+		return true;
 	}
 
 	bool alive(Vulkan::WSI &) override
@@ -150,11 +163,11 @@ public:
 			glfwDestroyWindow(window);
 	}
 
-	void notify_resize(unsigned width, unsigned height)
+	void notify_resize(unsigned width_, unsigned height_)
 	{
 		resize = true;
-		this->width = width;
-		this->height = height;
+		width = width_;
+		height = height_;
 	}
 
 	struct CachedWindow
@@ -172,11 +185,23 @@ public:
 		cached_window = win;
 	}
 
-	void set_window_title(const string &title)
+	void set_window_title(const string &title) override
 	{
 		if (window)
 			glfwSetWindowTitle(window, title.c_str());
 	}
+
+#ifdef _WIN32
+	void set_hmonitor(HMONITOR monitor)
+	{
+		current_hmonitor = monitor;
+	}
+
+	uintptr_t get_fullscreen_monitor() override
+	{
+		return reinterpret_cast<uintptr_t>(current_hmonitor);
+	}
+#endif
 
 private:
 	GLFWwindow *window = nullptr;
@@ -188,6 +213,10 @@ private:
 	LinuxInputManager input_manager;
 #elif defined(HAVE_XINPUT_WINDOWS)
 	XInputManager input_manager;
+#endif
+
+#ifdef _WIN32
+	HMONITOR current_hmonitor = nullptr;
 #endif
 };
 
@@ -271,6 +300,9 @@ static void key_cb(GLFWwindow *window, int key, int, int action, int mods)
 		glfwSetWindowShouldClose(window, GLFW_TRUE);
 	else if (action == GLFW_PRESS && key == GLFW_KEY_ENTER && mods == GLFW_MOD_ALT)
 	{
+#ifdef _WIN32
+		glfw->set_hmonitor(nullptr);
+#endif
 		if (glfwGetWindowMonitor(window))
 		{
 			auto cached = glfw->get_cached_window();
@@ -287,6 +319,9 @@ static void key_cb(GLFWwindow *window, int key, int, int action, int mods)
 				glfwGetWindowSize(window, &win.width, &win.height);
 				glfw->set_cached_window(win);
 				glfwSetWindowMonitor(window, primary, 0, 0, mode->width, mode->height, mode->refreshRate);
+#ifdef _WIN32
+				glfw->set_hmonitor(MonitorFromWindow(glfwGetWin32Window(window), MONITOR_DEFAULTTOPRIMARY));
+#endif
 			}
 		}
 	}
@@ -347,13 +382,20 @@ int application_main(Application *(*create_application)(int, char **), int argc,
 
 	if (app)
 	{
-		if (!app->init_wsi(make_unique<Granite::WSIPlatformGLFW>(1280, 720)))
+		auto platform = make_unique<Granite::WSIPlatformGLFW>();
+		if (!platform->init(1280, 720))
+			return 1;
+
+		if (!app->init_wsi(move(platform)))
 			return 1;
 
 		Granite::Global::start_audio_system();
 		while (app->poll())
 			app->run_frame();
 		Granite::Global::stop_audio_system();
+
+		app.reset();
+		Granite::Global::deinit();
 		return 0;
 	}
 	else

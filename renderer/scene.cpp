@@ -1,4 +1,4 @@
-/* Copyright (c) 2017-2018 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2019 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -23,6 +23,7 @@
 #include "scene.hpp"
 #include "transforms.hpp"
 #include "lights/lights.hpp"
+#include "simd.hpp"
 #include <float.h>
 
 using namespace std;
@@ -31,19 +32,19 @@ namespace Granite
 {
 
 Scene::Scene()
-	: spatials(pool.get_component_group<BoundedComponent, CachedSpatialTransformComponent, CachedSpatialTransformTimestampComponent>()),
-	  opaque(pool.get_component_group<CachedSpatialTransformComponent, RenderableComponent, OpaqueComponent>()),
-	  transparent(pool.get_component_group<CachedSpatialTransformComponent, RenderableComponent, TransparentComponent>()),
-	  positional_lights(pool.get_component_group<CachedSpatialTransformComponent, RenderableComponent, PositionalLightComponent>()),
-	  static_shadowing(pool.get_component_group<CachedSpatialTransformComponent, RenderableComponent, CastsStaticShadowComponent>()),
-	  dynamic_shadowing(pool.get_component_group<CachedSpatialTransformComponent, RenderableComponent, CastsDynamicShadowComponent>()),
+	: spatials(pool.get_component_group<BoundedComponent, RenderInfoComponent, CachedSpatialTransformTimestampComponent>()),
+	  opaque(pool.get_component_group<RenderInfoComponent, RenderableComponent, OpaqueComponent>()),
+	  transparent(pool.get_component_group<RenderInfoComponent, RenderableComponent, TransparentComponent>()),
+	  positional_lights(pool.get_component_group<RenderInfoComponent, RenderableComponent, PositionalLightComponent>()),
+	  static_shadowing(pool.get_component_group<RenderInfoComponent, RenderableComponent, CastsStaticShadowComponent>()),
+	  dynamic_shadowing(pool.get_component_group<RenderInfoComponent, RenderableComponent, CastsDynamicShadowComponent>()),
 	  render_pass_shadowing(pool.get_component_group<RenderPassComponent, RenderableComponent, CastsDynamicShadowComponent>()),
 	  backgrounds(pool.get_component_group<UnboundedComponent, RenderableComponent>()),
 	  cameras(pool.get_component_group<CameraComponent, CachedTransformComponent>()),
 	  directional_lights(pool.get_component_group<DirectionalLightComponent, CachedTransformComponent>()),
 	  ambient_lights(pool.get_component_group<AmbientLightComponent>()),
 	  per_frame_updates(pool.get_component_group<PerFrameUpdateComponent>()),
-	  per_frame_update_transforms(pool.get_component_group<PerFrameUpdateTransformComponent, CachedSpatialTransformComponent>()),
+	  per_frame_update_transforms(pool.get_component_group<PerFrameUpdateTransformComponent, RenderInfoComponent>()),
 	  environments(pool.get_component_group<EnvironmentComponent>()),
 	  render_pass_sinks(pool.get_component_group<RenderPassSinkComponent, RenderableComponent, CullPlaneComponent>()),
 	  render_pass_creators(pool.get_component_group<RenderPassComponent>())
@@ -54,7 +55,12 @@ Scene::Scene()
 Scene::~Scene()
 {
 	// Makes shutdown way faster :)
+	// We know ahead of time we're going to delete everything,
+	// so reduce a lot of overhead by deleting right away.
 	pool.reset_groups();
+
+	destroy_entities(entities);
+	destroy_entities(queued_entities);
 }
 
 template <typename T>
@@ -62,13 +68,13 @@ static void gather_visible_renderables(const Frustum &frustum, VisibilityList &l
 {
 	for (auto &o : objects)
 	{
-		auto *transform = get_component<CachedSpatialTransformComponent>(o);
+		auto *transform = get_component<RenderInfoComponent>(o);
 		auto *renderable = get_component<RenderableComponent>(o);
 
 		if (transform->transform)
 		{
 			if ((renderable->renderable->flags & RENDERABLE_FORCE_VISIBLE_BIT) != 0 ||
-			    frustum.intersects_fast(transform->world_aabb))
+			    SIMD::frustum_cull(transform->world_aabb, frustum.get_planes()))
 			{
 				list.push_back({ renderable->renderable.get(), transform });
 			}
@@ -121,7 +127,7 @@ void Scene::refresh_per_frame(RenderContext &context)
 	for (auto &update : per_frame_update_transforms)
 	{
 		auto *refresh = get_component<PerFrameUpdateTransformComponent>(update)->refresh;
-		auto *transform = get_component<CachedSpatialTransformComponent>(update);
+		auto *transform = get_component<RenderInfoComponent>(update);
 		if (refresh)
 			refresh->refresh(context, transform);
 	}
@@ -186,7 +192,7 @@ void Scene::gather_visible_positional_lights(const Frustum &frustum, VisibilityL
 
 	for (auto &o : positional_lights)
 	{
-		auto *transform = get_component<CachedSpatialTransformComponent>(o);
+		auto *transform = get_component<RenderInfoComponent>(o);
 		auto *renderable = get_component<RenderableComponent>(o);
 
 		if (transform->transform)
@@ -249,11 +255,11 @@ void Scene::update_skinning(Node &node)
 	{
 		unsigned len = unsigned(node.get_skin().cached_skin.size());
 		assert(node.get_skin().cached_skin.size() == node.cached_skin_transform.bone_world_transforms.size());
-		assert(node.get_skin().cached_skin.size() == node.cached_skin_transform.bone_normal_transforms.size());
+		//assert(node.get_skin().cached_skin.size() == node.cached_skin_transform.bone_normal_transforms.size());
 		for (unsigned i = 0; i < len; i++)
 		{
 			node.cached_skin_transform.bone_world_transforms[i] = node.get_skin().cached_skin[i]->world_transform;
-			node.cached_skin_transform.bone_normal_transforms[i] = node.get_skin().cached_skin[i]->normal_transform;
+			//node.cached_skin_transform.bone_normal_transforms[i] = node.get_skin().cached_skin[i]->normal_transform;
 		}
 
 		//log_node_transforms(node);
@@ -282,9 +288,11 @@ void Scene::update_transform_tree(Node &node, const mat4 &transform, bool parent
 			update_transform_tree(*child, node.cached_transform.world_transform, true);
 
 		// Apply the first transformation in the sequence, this is used for skinning.
-		node.cached_transform.world_transform = node.cached_transform.world_transform * node.initial_transform;
+		SIMD::mul(node.cached_transform.world_transform,
+		          node.cached_transform.world_transform,
+		          node.initial_transform);
 
-		compute_normal_transform(node.cached_transform.normal_transform, node.cached_transform.world_transform);
+		//compute_normal_transform(node.cached_transform.normal_transform, node.cached_transform.world_transform);
 		update_skinning(node);
 		node.update_timestamp();
 	}
@@ -298,7 +306,7 @@ void Scene::update_cached_transforms()
 	for (auto &s : spatials)
 	{
 		BoundedComponent *aabb;
-		CachedSpatialTransformComponent *cached_transform;
+		RenderInfoComponent *cached_transform;
 		CachedSpatialTransformTimestampComponent *timestamp;
 		tie(aabb, cached_transform, timestamp) = s;
 
@@ -311,12 +319,13 @@ void Scene::update_cached_transforms()
 					// TODO: Isolate the AABB per bone.
 					cached_transform->world_aabb = AABB(vec3(FLT_MAX), vec3(-FLT_MAX));
 					for (auto &m : cached_transform->skin_transform->bone_world_transforms)
-						cached_transform->world_aabb.expand(aabb->aabb->transform(m));
+						SIMD::transform_and_expand_aabb(cached_transform->world_aabb, *aabb->aabb, m);
 				}
 				else
 				{
-					cached_transform->world_aabb = aabb->aabb->transform(
-						cached_transform->transform->world_transform);
+					SIMD::transform_aabb(cached_transform->world_aabb,
+					                     *aabb->aabb,
+					                     cached_transform->transform->world_transform);
 				}
 			}
 			timestamp->last_timestamp = *timestamp->current_timestamp;
@@ -346,7 +355,12 @@ void Scene::update_cached_transforms()
 
 Scene::NodeHandle Scene::create_node()
 {
-	return Util::make_handle<Node>();
+	return Scene::NodeHandle(node_pool.allocate(this));
+}
+
+void Scene::NodeDeleter::operator()(Node *node)
+{
+	node->parent_scene->get_node_pool().free(node);
 }
 
 static void add_bone(Scene::NodeHandle *bones, uint32_t parent, const SceneFormats::Skin::Bone &bone)
@@ -373,7 +387,7 @@ Scene::NodeHandle Scene::create_skinned_node(const SceneFormats::Skin &skin)
 	}
 
 	node->cached_skin_transform.bone_world_transforms.resize(skin.joint_transforms.size());
-	node->cached_skin_transform.bone_normal_transforms.resize(skin.joint_transforms.size());
+	//node->cached_skin_transform.bone_normal_transforms.resize(skin.joint_transforms.size());
 
 	auto &node_skin = node->get_skin();
 	node_skin.cached_skin.reserve(skin.joint_transforms.size());
@@ -407,20 +421,30 @@ void Scene::Node::add_child(NodeHandle node)
 	children.push_back(node);
 }
 
-void Scene::Node::remove_child(Node &node)
+Scene::NodeHandle Scene::Node::remove_child(Node *node)
 {
-	assert(node.parent == this);
-	node.parent = nullptr;
+	assert(node->parent == this);
+	node->parent = nullptr;
+	auto handle = node->reference_from_this();
 
 	// Force parents to be notified.
-	node.cached_transform_dirty = false;
-	node.invalidate_cached_transform();
+	node->cached_transform_dirty = false;
+	node->invalidate_cached_transform();
 
 	auto itr = remove_if(begin(children), end(children), [&](const NodeHandle &h) {
-		return &node == h.get();
+		return node == h.get();
 	});
 	assert(itr != end(children));
 	children.erase(itr, end(children));
+	return handle;
+}
+
+Scene::NodeHandle Scene::Node::remove_node_from_hierarchy(Node *node)
+{
+	if (node->parent)
+		return node->parent->remove_child(node);
+	else
+		return Scene::NodeHandle(nullptr);
 }
 
 void Scene::Node::invalidate_cached_transform()
@@ -433,17 +457,17 @@ void Scene::Node::invalidate_cached_transform()
 	}
 }
 
-EntityHandle Scene::create_entity()
+Entity *Scene::create_entity()
 {
-	EntityHandle entity = pool.create_entity();
-	nodes.push_back(entity);
+	Entity *entity = pool.create_entity();
+	entities.insert_front(entity);
 	return entity;
 }
 
-EntityHandle Scene::create_light(const SceneFormats::LightInfo &light, Node *node)
+Entity *Scene::create_light(const SceneFormats::LightInfo &light, Node *node)
 {
-	EntityHandle entity = pool.create_entity();
-	nodes.push_back(entity);
+	Entity *entity = pool.create_entity();
+	entities.insert_front(entity);
 
 	switch (light.type)
 	{
@@ -484,7 +508,7 @@ EntityHandle Scene::create_light(const SceneFormats::LightInfo &light, Node *nod
 		entity->allocate_component<PositionalLightComponent>()->light = &positional;
 		entity->allocate_component<RenderableComponent>()->renderable = renderable;
 
-		auto *transform = entity->allocate_component<CachedSpatialTransformComponent>();
+		auto *transform = entity->allocate_component<RenderInfoComponent>();
 		auto *timestamp = entity->allocate_component<CachedSpatialTransformTimestampComponent>();
 		if (node)
 		{
@@ -500,14 +524,14 @@ EntityHandle Scene::create_light(const SceneFormats::LightInfo &light, Node *nod
 	return entity;
 }
 
-EntityHandle Scene::create_renderable(AbstractRenderableHandle renderable, Node *node)
+Entity *Scene::create_renderable(AbstractRenderableHandle renderable, Node *node)
 {
-	EntityHandle entity = pool.create_entity();
-	nodes.push_back(entity);
+	Entity *entity = pool.create_entity();
+	entities.insert_front(entity);
 
 	if (renderable->has_static_aabb())
 	{
-		auto *transform = entity->allocate_component<CachedSpatialTransformComponent>();
+		auto *transform = entity->allocate_component<RenderInfoComponent>();
 		auto *timestamp = entity->allocate_component<CachedSpatialTransformTimestampComponent>();
 		if (node)
 		{
@@ -546,13 +570,58 @@ EntityHandle Scene::create_renderable(AbstractRenderableHandle renderable, Node 
 	return entity;
 }
 
+void Scene::destroy_entities(Util::IntrusiveList<Entity> &entity_list)
+{
+	auto itr = entity_list.begin();
+	while (itr != entity_list.end())
+	{
+		auto *to_free = itr.get();
+		itr = entity_list.erase(itr);
+		to_free->get_pool()->delete_entity(to_free);
+	}
+}
+
 void Scene::remove_entities_with_component(ComponentType id)
 {
-	auto itr = remove_if(begin(nodes), end(nodes), [id](const EntityHandle &entity) {
-		return entity->has_component(id);
-	});
+	// We know ahead of time we're going to delete everything,
+	// so reduce a lot of overhead by deleting right away.
+	pool.reset_groups_for_component_type(id);
 
-	nodes.erase(itr, end(nodes));
+	auto itr = entities.begin();
+	while (itr != entities.end())
+	{
+		if (itr->has_component(id))
+		{
+			auto *to_free = itr.get();
+			itr = entities.erase(itr);
+			to_free->get_pool()->delete_entity(to_free);
+		}
+		else
+			++itr;
+	}
+}
+
+void Scene::destroy_queued_entities()
+{
+	destroy_entities(queued_entities);
+}
+
+void Scene::destroy_entity(Entity *entity)
+{
+	if (entity)
+	{
+		entities.erase(entity);
+		entity->get_pool()->delete_entity(entity);
+	}
+}
+
+void Scene::queue_destroy_entity(Entity *entity)
+{
+	if (entity->mark_for_destruction())
+	{
+		entities.erase(entity);
+		queued_entities.insert_front(entity);
+	}
 }
 
 }

@@ -1,4 +1,4 @@
-/* Copyright (c) 2017-2018 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2019 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -580,10 +580,10 @@ void LinuxInputManager::input_handle_joystick(Device &dev, const input_event &e)
 	}
 }
 
-bool LinuxInputManager::init(LinuxInputManagerFlags flags, InputTracker *tracker)
+bool LinuxInputManager::init(LinuxInputManagerFlags flags_, InputTracker *tracker_)
 {
-	this->flags = flags;
-	this->tracker = tracker;
+	flags = flags_;
+	tracker = tracker_;
 	terminal_disable_input();
 	init_key_table();
 

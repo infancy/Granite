@@ -1,4 +1,4 @@
-/* Copyright (c) 2017-2018 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2019 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -53,13 +53,13 @@ struct Transform
 struct CachedTransform
 {
 	mat4 world_transform;
-	mat4 normal_transform;
+	//mat4 normal_transform;
 };
 
 struct CachedSkinTransform
 {
 	std::vector<mat4> bone_world_transforms;
-	std::vector<mat4> bone_normal_transforms;
+	//std::vector<mat4> bone_normal_transforms;
 };
 
 struct BoundedComponent : ComponentBase
@@ -147,7 +147,7 @@ struct RenderPassComponent : ComponentBase
 struct PerFrameRefreshableTransform
 {
 	virtual ~PerFrameRefreshableTransform() = default;
-	virtual void refresh(RenderContext &context, const CachedSpatialTransformComponent *transform) = 0;
+	virtual void refresh(RenderContext &context, const RenderInfoComponent *transform) = 0;
 };
 
 struct PerFrameRefreshable
@@ -168,12 +168,16 @@ struct PerFrameUpdateComponent : ComponentBase
 	PerFrameRefreshable *refresh = nullptr;
 };
 
-struct CachedSpatialTransformComponent : ComponentBase
+struct RenderInfoComponent : ComponentBase
 {
-	GRANITE_COMPONENT_TYPE_DECL(CachedSpatialTransformComponent)
+	GRANITE_COMPONENT_TYPE_DECL(RenderInfoComponent)
 	AABB world_aabb;
 	CachedTransform *transform = nullptr;
 	CachedSkinTransform *skin_transform = nullptr;
+
+	// Can be used to pass non-spatial transform related data to an AbstractRenderable,
+	// e.g. per instance material information.
+	const void *extra_data = nullptr;
 };
 
 struct CachedTransformComponent : ComponentBase

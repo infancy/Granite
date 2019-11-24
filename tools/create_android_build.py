@@ -66,6 +66,12 @@ def main():
                         help = 'The assets folder of the app',
                         type = str,
                         default = 'assets')
+    parser.add_argument('--audio',
+                        help = 'Enable audio support',
+                        action = 'store_true')
+    parser.add_argument('--physics',
+                        help = 'Enable physics support',
+                        action = 'store_true')
 
     args = parser.parse_args()
     abis = ['arm64-v8a'] if args.abis is None else args.abis
@@ -125,8 +131,8 @@ def main():
         cmakelists = find_relative_path(target_build_gradle, args.cmake_lists_toplevel)
         assets = find_relative_path(target_build_gradle, args.assets)
         granite_assets = find_relative_path(target_build_gradle, os.path.join(args.granite_dir, 'assets'))
-        renderdoc_jni = find_relative_path(target_build_gradle, os.path.join(args.granite_dir,
-                                                                             'application/platforms/android/renderdoc'))
+        external_jni = find_relative_path(target_build_gradle, os.path.join(args.granite_dir,
+                                                                            'application/platforms/android/external_layers'))
 
         target_abis = ', '.join(["'" + x + "'" for x in abis])
 
@@ -135,8 +141,10 @@ def main():
             .replace('$$CMAKELISTS$$', cmakelists) \
             .replace('$$ASSETS$$', assets) \
             .replace('$$GRANITE_ASSETS$$', granite_assets) \
-            .replace('$$RENDERDOC_JNI$$', renderdoc_jni) \
-            .replace('$$ABIS$$', target_abis)
+            .replace('$$EXTERNAL_JNI$$', external_jni) \
+            .replace('$$ABIS$$', target_abis) \
+            .replace('$$AUDIO$$', 'ON' if args.audio else 'OFF') \
+            .replace('$$PHYSICS$$', 'ON' if args.physics else 'OFF')
 
         with open(target_build_gradle, 'w') as dump_file:
             print(data, file = dump_file)

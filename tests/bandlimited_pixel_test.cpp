@@ -1,4 +1,4 @@
-/* Copyright (c) 2017-2018 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2019 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -80,6 +80,11 @@ struct BandlimitedPixelTestApplication : Application, EventHandler
 		cam.set_aspect(e.get_aspect_ratio());
 		cam.set_fovy(0.6f * half_pi<float>());
 		cam.set_depth_range(0.05f, 100.0f);
+
+		float mat[4];
+		WSI::build_prerotate_matrix_2x2(e.get_prerotate(), mat);
+		pre_rotate = mat4(vec4(mat[0], mat[1], 0.0f, 0.0f), vec4(mat[2], mat[3], 0.0f, 0.0f),
+		                  vec4(0.0f, 0.0f, 1.0f, 0.0f), vec4(0.0f, 0.0f, 0.0f, 1.0f));
 	}
 
 	void on_swapchain_destroyed(const SwapchainParameterEvent &)
@@ -126,8 +131,17 @@ struct BandlimitedPixelTestApplication : Application, EventHandler
 		auto width = texture->get_image()->get_width();
 		auto height = texture->get_image()->get_height();
 
-		mat4 mvp = cam.get_projection() * cam.get_view() * mat4_cast(rot) * scale(20.0f * vec3(float(width) / float(height), 1.0f, 1.0f));
+		mat4 mvp = pre_rotate * cam.get_projection() * cam.get_view() * mat4_cast(rot) * scale(20.0f * vec3(float(width) / float(height), 1.0f, 1.0f));
 		cmd->push_constants(&mvp, 0, sizeof(mvp));
+
+		struct TexInfo
+		{
+			alignas(8) vec2 res;
+			alignas(8) vec2 inv_res;
+		} tex;
+		tex.res = vec2(width, height);
+		tex.inv_res = 1.0f / tex.res;
+		*cmd->allocate_typed_constant_data<TexInfo>(3, 0, 1) = tex;
 
 		CommandBufferUtil::draw_quad(*cmd);
 		cmd->end_render_pass();
@@ -135,10 +149,11 @@ struct BandlimitedPixelTestApplication : Application, EventHandler
 	}
 
 	double elapsed = 0.0;
-	FPSCamera cam;
+	Camera cam;
 	bool rotate = false;
 	bool debug = false;
 	unsigned mode = 2;
+	mat4 pre_rotate;
 };
 
 namespace Granite

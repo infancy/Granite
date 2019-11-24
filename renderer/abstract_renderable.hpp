@@ -1,4 +1,4 @@
-/* Copyright (c) 2017-2018 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2019 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -30,7 +30,7 @@ namespace Granite
 class RenderQueue;
 class RenderContext;
 class ShaderSuite;
-struct CachedSpatialTransformComponent;
+struct RenderInfoComponent;
 struct SpriteTransformInfo;
 
 enum class DrawPipeline : unsigned
@@ -50,9 +50,9 @@ class AbstractRenderable : public Util::IntrusivePtrEnabled<AbstractRenderable>
 {
 public:
 	virtual ~AbstractRenderable() = default;
-	virtual void get_render_info(const RenderContext &context, const CachedSpatialTransformComponent *transform, RenderQueue &queue) const = 0;
+	virtual void get_render_info(const RenderContext &context, const RenderInfoComponent *transform, RenderQueue &queue) const = 0;
 
-	virtual void get_depth_render_info(const RenderContext &context, const CachedSpatialTransformComponent *transform, RenderQueue &queue) const
+	virtual void get_depth_render_info(const RenderContext &context, const RenderInfoComponent *transform, RenderQueue &queue) const
 	{
 		return get_render_info(context, transform, queue);
 	}

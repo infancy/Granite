@@ -1,4 +1,4 @@
-/* Copyright (c) 2017-2018 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2019 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -139,6 +139,8 @@ void SceneViewerApplication::read_config(const std::string &path)
 		config.clustered_lights_shadows_vsm = doc["clusteredLightsShadowsVSM"].GetBool();
 	if (doc.HasMember("hdrBloom"))
 		config.hdr_bloom = doc["hdrBloom"].GetBool();
+	if (doc.HasMember("hdrBloomDynamicExposure"))
+		config.hdr_bloom_dynamic_exposure = doc["hdrBloomDynamicExposure"].GetBool();
 	if (doc.HasMember("showUi"))
 		config.show_ui = doc["showUi"].GetBool();
 	if (doc.HasMember("forwardDepthPrepass"))
@@ -365,9 +367,9 @@ void SceneViewerApplication::rescale_scene(float radius)
 	AABB aabb(vec3(FLT_MAX), vec3(-FLT_MAX));
 	auto &objects = scene_loader.get_scene()
 	                    .get_entity_pool()
-	                    .get_component_group<CachedSpatialTransformComponent, RenderableComponent>();
+	                    .get_component_group<RenderInfoComponent, RenderableComponent>();
 	for (auto &caster : objects)
-		aabb.expand(get_component<CachedSpatialTransformComponent>(caster)->world_aabb);
+		aabb.expand(get_component<RenderInfoComponent>(caster)->world_aabb);
 
 	float scale_factor = radius / aabb.get_radius();
 	auto root_node = scene_loader.get_scene().get_root_node();
@@ -490,6 +492,12 @@ bool SceneViewerApplication::on_key_down(const KeyboardEvent &e)
 		break;
 	}
 
+	case Key::M:
+	{
+		get_wsi().set_backbuffer_srgb(!get_wsi().get_backbuffer_srgb());
+		break;
+	}
+
 	default:
 		break;
 	}
@@ -580,19 +588,22 @@ void SceneViewerApplication::render_main_pass(CommandBuffer &cmd, const mat4 &pr
 		{
 			depth_renderer.begin();
 			depth_renderer.push_renderables(context, visible);
-			depth_renderer.flush(cmd, context, Renderer::NO_COLOR);
+			depth_renderer.flush(cmd, context, Renderer::NO_COLOR_BIT);
 		}
 
 		scene.gather_unbounded_renderables(visible);
 
 		forward_renderer.set_mesh_renderer_options_from_lighting(lighting);
-		forward_renderer.set_mesh_renderer_options(forward_renderer.get_mesh_renderer_options() | config.pcf_flags);
+		forward_renderer.set_mesh_renderer_options(
+				forward_renderer.get_mesh_renderer_options() |
+				config.pcf_flags |
+				(config.forward_depth_prepass ? Renderer::ALPHA_TEST_DISABLE_BIT : 0));
 		forward_renderer.begin();
 		forward_renderer.push_renderables(context, visible);
 
 		Renderer::RendererOptionFlags opt = 0;
 		if (config.forward_depth_prepass)
-			opt |= Renderer::DEPTH_STENCIL_READ_ONLY;
+			opt |= Renderer::DEPTH_STENCIL_READ_ONLY_BIT | Renderer::DEPTH_TEST_EQUAL_BIT;
 
 		forward_renderer.flush(cmd, context, opt);
 	}
@@ -640,7 +651,8 @@ void SceneViewerApplication::add_main_pass_forward(Device &device, const std::st
 	AttachmentInfo color, depth;
 
 	bool supports_32bpp =
-	    device.image_format_is_supported(VK_FORMAT_B10G11R11_UFLOAT_PACK32, VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT);
+			device.image_format_is_supported(VK_FORMAT_B10G11R11_UFLOAT_PACK32,
+			                                 VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT);
 
 	if (config.hdr_bloom)
 		color.format =
@@ -655,19 +667,19 @@ void SceneViewerApplication::add_main_pass_forward(Device &device, const std::st
 	auto resolved = color;
 	resolved.samples = 1;
 
-	auto &lighting = graph.add_pass(tagcat("lighting", tag), RENDER_GRAPH_QUEUE_GRAPHICS_BIT);
+	auto &lighting_pass = graph.add_pass(tagcat("lighting", tag), RENDER_GRAPH_QUEUE_GRAPHICS_BIT);
 
 	if (color.samples > 1)
 	{
-		lighting.add_color_output(tagcat("HDR-MS", tag), color);
-		lighting.add_resolve_output(tagcat("HDR", tag), resolved);
+		lighting_pass.add_color_output(tagcat("HDR-MS", tag), color);
+		lighting_pass.add_resolve_output(tagcat("HDR", tag), resolved);
 	}
 	else
-		lighting.add_color_output(tagcat("HDR", tag), color);
+		lighting_pass.add_color_output(tagcat("HDR", tag), color);
 
-	lighting.set_depth_stencil_output(tagcat("depth", tag), depth);
+	lighting_pass.set_depth_stencil_output(tagcat("depth", tag), depth);
 
-	lighting.set_get_clear_depth_stencil([](VkClearDepthStencilValue *value) -> bool {
+	lighting_pass.set_get_clear_depth_stencil([](VkClearDepthStencilValue *value) -> bool {
 		if (value)
 		{
 			value->depth = 1.0f;
@@ -676,13 +688,13 @@ void SceneViewerApplication::add_main_pass_forward(Device &device, const std::st
 		return true;
 	});
 
-	lighting.set_get_clear_color([](unsigned, VkClearColorValue *value) -> bool {
+	lighting_pass.set_get_clear_color([](unsigned, VkClearColorValue *value) -> bool {
 		if (value)
 			memset(value, 0, sizeof(*value));
 		return true;
 	});
 
-	lighting.set_build_render_pass([this](CommandBuffer &cmd) {
+	lighting_pass.set_build_render_pass([this](CommandBuffer &cmd) {
 		render_main_pass(cmd, selected_camera->get_projection(), selected_camera->get_view());
 		render_transparent_objects(cmd, selected_camera->get_projection(), selected_camera->get_view());
 	});
@@ -691,11 +703,11 @@ void SceneViewerApplication::add_main_pass_forward(Device &device, const std::st
 	shadow_near = nullptr;
 	if (config.directional_light_shadows)
 	{
-		shadow_main = &lighting.add_texture_input("shadow-main");
+		shadow_main = &lighting_pass.add_texture_input("shadow-main");
 		if (config.directional_light_cascaded_shadows)
-			shadow_near = &lighting.add_texture_input("shadow-near");
+			shadow_near = &lighting_pass.add_texture_input("shadow-near");
 	}
-	scene_loader.get_scene().add_render_pass_dependencies(graph, lighting);
+	scene_loader.get_scene().add_render_pass_dependencies(graph, lighting_pass);
 }
 
 void SceneViewerApplication::add_main_pass_deferred(Device &device, const std::string &tag)
@@ -748,20 +760,21 @@ void SceneViewerApplication::add_main_pass_deferred(Device &device, const std::s
 
 	if (config.ssao)
 	{
-		setup_ssao(graph, context, tagcat("ssao-output", tag), tagcat("depth-transient", tag), tagcat("normal", tag));
+		setup_ssao_naive(graph, context, tagcat("ssao-output", tag), tagcat("depth-transient", tag),
+		                 tagcat("normal", tag));
 	}
 
-	auto &lighting = graph.add_pass(tagcat("lighting", tag), RENDER_GRAPH_QUEUE_GRAPHICS_BIT);
-	lighting.add_color_output(tagcat("HDR", tag), emissive, tagcat("emissive", tag));
-	lighting.add_attachment_input(tagcat("albedo", tag));
-	lighting.add_attachment_input(tagcat("normal", tag));
-	lighting.add_attachment_input(tagcat("pbr", tag));
-	lighting.add_attachment_input(tagcat("depth-transient", tag));
-	lighting.set_depth_stencil_input(tagcat("depth-transient", tag));
-	lighting.add_fake_resource_write_alias(tagcat("depth-transient", tag), tagcat("depth", tag));
+	auto &lighting_pass = graph.add_pass(tagcat("lighting", tag), RENDER_GRAPH_QUEUE_GRAPHICS_BIT);
+	lighting_pass.add_color_output(tagcat("HDR", tag), emissive, tagcat("emissive", tag));
+	lighting_pass.add_attachment_input(tagcat("albedo", tag));
+	lighting_pass.add_attachment_input(tagcat("normal", tag));
+	lighting_pass.add_attachment_input(tagcat("pbr", tag));
+	lighting_pass.add_attachment_input(tagcat("depth-transient", tag));
+	lighting_pass.set_depth_stencil_input(tagcat("depth-transient", tag));
+	lighting_pass.add_fake_resource_write_alias(tagcat("depth-transient", tag), tagcat("depth", tag));
 
 	if (config.ssao)
-		ssao_output = &lighting.add_texture_input(tagcat("ssao-output", tag));
+		ssao_output = &lighting_pass.add_texture_input(tagcat("ssao-output", tag));
 	else
 		ssao_output = nullptr;
 
@@ -769,14 +782,14 @@ void SceneViewerApplication::add_main_pass_deferred(Device &device, const std::s
 	shadow_near = nullptr;
 	if (config.directional_light_shadows)
 	{
-		shadow_main = &lighting.add_texture_input("shadow-main");
+		shadow_main = &lighting_pass.add_texture_input("shadow-main");
 		if (config.directional_light_cascaded_shadows)
-			shadow_near = &lighting.add_texture_input("shadow-near");
+			shadow_near = &lighting_pass.add_texture_input("shadow-near");
 	}
 
 	scene_loader.get_scene().add_render_pass_dependencies(graph, gbuffer);
 
-	lighting.set_build_render_pass([this](CommandBuffer &cmd) {
+	lighting_pass.set_build_render_pass([this](CommandBuffer &cmd) {
 		if (!config.clustered_lights)
 			render_positional_lights(cmd, selected_camera->get_projection(), selected_camera->get_view());
 		DeferredLightRenderer::render_light(cmd, context, config.pcf_flags);
@@ -943,10 +956,14 @@ void SceneViewerApplication::on_swapchain_changed(const SwapchainParameterEvent 
 	{
 		bool resolved = setup_before_post_chain_antialiasing(config.postaa_type, graph, jitter, "HDR-main",
 		                                                     "depth-main", "HDR-resolved");
+
+		HDROptions opts;
+		opts.dynamic_exposure = config.hdr_bloom_dynamic_exposure;
+
 		if (ImplementationQuirks::get().use_async_compute_post)
-			setup_hdr_postprocess_compute(graph, resolved ? "HDR-resolved" : "HDR-main", "tonemapped");
+			setup_hdr_postprocess_compute(graph, resolved ? "HDR-resolved" : "HDR-main", "tonemapped", opts);
 		else
-			setup_hdr_postprocess(graph, resolved ? "HDR-resolved" : "HDR-main", "tonemapped");
+			setup_hdr_postprocess(graph, resolved ? "HDR-resolved" : "HDR-main", "tonemapped", opts);
 	}
 
 	if (setup_after_post_chain_antialiasing(config.postaa_type, graph, jitter, ui_source, "depth-main",
@@ -976,7 +993,7 @@ void SceneViewerApplication::on_swapchain_changed(const SwapchainParameterEvent 
 		graph.set_backbuffer_source(ui_source);
 
 	graph.bake();
-	graph.log();
+	//graph.log();
 	graph.install_physical_buffers(move(physical_buffers));
 
 	need_shadow_map_update = true;
@@ -992,10 +1009,10 @@ void SceneViewerApplication::update_shadow_scene_aabb()
 	auto &scene = scene_loader.get_scene();
 	auto &shadow_casters =
 	    scene.get_entity_pool()
-	        .get_component_group<CachedSpatialTransformComponent, RenderableComponent, CastsStaticShadowComponent>();
+	        .get_component_group<RenderInfoComponent, RenderableComponent, CastsStaticShadowComponent>();
 	AABB aabb(vec3(FLT_MAX), vec3(-FLT_MAX));
 	for (auto &caster : shadow_casters)
-		aabb.expand(get_component<CachedSpatialTransformComponent>(caster)->world_aabb);
+		aabb.expand(get_component<RenderInfoComponent>(caster)->world_aabb);
 	shadow_scene_aabb = aabb;
 }
 
@@ -1063,7 +1080,7 @@ void SceneViewerApplication::update_scene(double frame_time, double elapsed_time
 	last_frame_times[last_frame_index++ & FrameWindowSizeMask] = float(frame_time);
 	auto &scene = scene_loader.get_scene();
 
-	animation_system->animate(elapsed_time);
+	animation_system->animate(frame_time, elapsed_time);
 	scene.update_cached_transforms();
 
 	jitter.step(selected_camera->get_projection(), selected_camera->get_view());

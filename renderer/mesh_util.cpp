@@ -1,4 +1,4 @@
-/* Copyright (c) 2017-2018 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2019 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -38,8 +38,8 @@ using namespace Granite::SceneFormats;
 
 namespace Granite
 {
-ImportedSkinnedMesh::ImportedSkinnedMesh(const Mesh &mesh, const MaterialInfo &info)
-	: mesh(mesh), info(info)
+ImportedSkinnedMesh::ImportedSkinnedMesh(const Mesh &mesh_, const MaterialInfo &info_)
+	: mesh(mesh_), info(info_)
 {
 	topology = mesh.topology;
 	index_type = mesh.index_type;
@@ -62,24 +62,24 @@ void ImportedSkinnedMesh::on_device_created(const DeviceCreatedEvent &created)
 {
 	auto &device = created.get_device();
 
-	BufferCreateInfo info = {};
-	info.domain = BufferDomain::Device;
-	info.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+	BufferCreateInfo buffer_info = {};
+	buffer_info.domain = BufferDomain::Device;
+	buffer_info.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
 
-	info.size = mesh.positions.size();
-	vbo_position = device.create_buffer(info, mesh.positions.data());
+	buffer_info.size = mesh.positions.size();
+	vbo_position = device.create_buffer(buffer_info, mesh.positions.data());
 
 	if (!mesh.attributes.empty())
 	{
-		info.size = mesh.attributes.size();
-		vbo_attributes = device.create_buffer(info, mesh.attributes.data());
+		buffer_info.size = mesh.attributes.size();
+		vbo_attributes = device.create_buffer(buffer_info, mesh.attributes.data());
 	}
 
 	if (!mesh.indices.empty())
 	{
-		info.usage = VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
-		info.size = mesh.indices.size();
-		ibo = device.create_buffer(info, mesh.indices.data());
+		buffer_info.usage = VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
+		buffer_info.size = mesh.indices.size();
+		ibo = device.create_buffer(buffer_info, mesh.indices.data());
 	}
 
 	bake();
@@ -92,8 +92,18 @@ void ImportedSkinnedMesh::on_device_destroyed(const DeviceCreatedEvent &)
 	ibo.reset();
 }
 
-ImportedMesh::ImportedMesh(const Mesh &mesh, const MaterialInfo &info)
-	: mesh(mesh), info(info)
+const SceneFormats::Mesh &ImportedSkinnedMesh::get_mesh() const
+{
+	return mesh;
+}
+
+const SceneFormats::MaterialInfo &ImportedSkinnedMesh::get_material_info() const
+{
+	return info;
+}
+
+ImportedMesh::ImportedMesh(const Mesh &mesh_, const MaterialInfo &info_)
+	: mesh(mesh_), info(info_)
 {
 	topology = mesh.topology;
 	primitive_restart = mesh.primitive_restart;
@@ -113,28 +123,38 @@ ImportedMesh::ImportedMesh(const Mesh &mesh, const MaterialInfo &info)
 	EVENT_MANAGER_REGISTER_LATCH(ImportedMesh, on_device_created, on_device_destroyed, DeviceCreatedEvent);
 }
 
+const SceneFormats::Mesh &ImportedMesh::get_mesh() const
+{
+	return mesh;
+}
+
+const SceneFormats::MaterialInfo &ImportedMesh::get_material_info() const
+{
+	return info;
+}
+
 void ImportedMesh::on_device_created(const DeviceCreatedEvent &created)
 {
 	auto &device = created.get_device();
 
-	BufferCreateInfo info = {};
-	info.domain = BufferDomain::Device;
-	info.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+	BufferCreateInfo buffer_info = {};
+	buffer_info.domain = BufferDomain::Device;
+	buffer_info.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
 
-	info.size = mesh.positions.size();
-	vbo_position = device.create_buffer(info, mesh.positions.data());
+	buffer_info.size = mesh.positions.size();
+	vbo_position = device.create_buffer(buffer_info, mesh.positions.data());
 
 	if (!mesh.attributes.empty())
 	{
-		info.size = mesh.attributes.size();
-		vbo_attributes = device.create_buffer(info, mesh.attributes.data());
+		buffer_info.size = mesh.attributes.size();
+		vbo_attributes = device.create_buffer(buffer_info, mesh.attributes.data());
 	}
 
 	if (!mesh.indices.empty())
 	{
-		info.usage = VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
-		info.size = mesh.indices.size();
-		ibo = device.create_buffer(info, mesh.indices.data());
+		buffer_info.usage = VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
+		buffer_info.size = mesh.indices.size();
+		ibo = device.create_buffer(buffer_info, mesh.indices.data());
 	}
 
 	bake();
@@ -147,20 +167,14 @@ void ImportedMesh::on_device_destroyed(const DeviceCreatedEvent &)
 	ibo.reset();
 }
 
-SphereMesh::SphereMesh(unsigned density)
-	: density(density)
-{
-	static_aabb = AABB(vec3(-1.0f), vec3(1.0f));
-	material = StockMaterials::get().get_checkerboard();
-	EVENT_MANAGER_REGISTER_LATCH(SphereMesh, on_device_created, on_device_destroyed, DeviceCreatedEvent);
-}
 
-SphereMeshData create_sphere_mesh(unsigned density)
+GeneratedMeshData create_sphere_mesh(unsigned density)
 {
-	SphereMeshData mesh;
+	GeneratedMeshData mesh;
 	mesh.positions.reserve(6 * density * density);
 	mesh.attributes.reserve(6 * density * density);
 	mesh.indices.reserve(2 * density * density * 6);
+	mesh.has_uvs = true;
 
 	float density_mod = 1.0f / float(density - 1);
 	const auto to_uv = [&](unsigned x, unsigned y) -> vec2 {
@@ -222,32 +236,335 @@ SphereMeshData create_sphere_mesh(unsigned density)
 		}
 	}
 
+	mesh.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP;
+	mesh.primitive_restart = true;
 	return mesh;
 }
 
-void SphereMesh::on_device_created(const DeviceCreatedEvent &event)
+GeneratedMeshData create_capsule_mesh(unsigned density, float height, float radius)
 {
-	auto &device = event.get_device();
+	GeneratedMeshData mesh;
+	mesh.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+	mesh.primitive_restart = false;
 
-	auto mesh = create_sphere_mesh(density);
+	const unsigned inner_rings = density / 2;
+	mesh.positions.resize(2 * inner_rings * density + 2);
+	mesh.attributes.resize(2 * inner_rings * density + 2);
 
+	const float half_height = 0.5f * height - 0.5f * radius;
+
+	// Top center
+	mesh.positions[0] = vec3(0.0f, half_height + radius, 0.0f);
+	mesh.attributes[0].normal = vec3(0.0f, 1.0f, 0.0f);
+	// Bottom center
+	mesh.positions[1] = vec3(0.0f, -half_height - radius, 0.0f);
+	mesh.attributes[1].normal = vec3(0.0f, -1.0f, 0.0f);
+
+	float inv_density = 1.0f / float(density);
+
+	// Top rings
+	for (unsigned ring = 0; ring < inner_rings; ring++)
+	{
+		float w = float(ring + 1) / float(inner_rings);
+		float extra_h = radius * muglm::sqrt(1.0f - w * w);
+		unsigned offset = ring * density + 2;
+		for (unsigned i = 0; i < density; i++)
+		{
+			float rad = 2.0f * pi<float>() * (i + 0.5f) * inv_density;
+			auto &pos = mesh.positions[offset + i];
+			pos = vec3(w * radius * cos(rad), half_height + extra_h, -w * radius * sin(rad));
+			mesh.attributes[offset + i].normal = normalize(vec3(pos.x, extra_h, pos.z));
+		}
+	}
+
+	// Bottom rings
+	for (unsigned ring = 0; ring < inner_rings; ring++)
+	{
+		float w = float(inner_rings - ring) / float(inner_rings);
+		float extra_h = radius * muglm::sqrt(1.0f - w * w);
+		unsigned offset = (ring + inner_rings) * density + 2;
+		for (unsigned i = 0; i < density; i++)
+		{
+			float rad = 2.0f * pi<float>() * (i + 0.5f) * inv_density;
+			auto &pos = mesh.positions[offset + i];
+			pos = vec3(w * radius * cos(rad), -half_height - extra_h, -w * radius * sin(rad));
+			mesh.attributes[offset + i].normal = normalize(vec3(pos.x, -extra_h, pos.z));
+		}
+	}
+
+	// Link up top vertices.
+	for (unsigned i = 0; i < density; i++)
+	{
+		mesh.indices.push_back(0);
+		mesh.indices.push_back(i + 2);
+		mesh.indices.push_back(((i + 1) % density) + 2);
+	}
+
+	// Link up bottom vertices.
+	for (unsigned i = 0; i < density; i++)
+	{
+		mesh.indices.push_back(1);
+		mesh.indices.push_back((2 * inner_rings - 1) * density + ((i + 1) % density) + 2);
+		mesh.indices.push_back((2 * inner_rings - 1) * density + i + 2);
+	}
+
+	// Link up rings.
+	for (unsigned ring = 0; ring < 2 * inner_rings - 1; ring++)
+	{
+		unsigned off0 = ring * density + 2;
+		unsigned off1 = off0 + density;
+		for (unsigned i = 0; i < density; i++)
+		{
+			mesh.indices.push_back(off0 + i);
+			mesh.indices.push_back(off1 + i);
+			mesh.indices.push_back(off0 + ((i + 1) % density));
+			mesh.indices.push_back(off1 + ((i + 1) % density));
+			mesh.indices.push_back(off0 + ((i + 1) % density));
+			mesh.indices.push_back(off1 + i);
+		}
+	}
+
+	return mesh;
+}
+
+GeneratedMeshData create_cylinder_mesh(unsigned density, float height, float radius)
+{
+	GeneratedMeshData mesh;
+	mesh.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+	mesh.primitive_restart = false;
+
+	mesh.positions.resize(6 * density + 2);
+	mesh.attributes.resize(6 * density + 2);
+
+	const float half_height = 0.5f * height;
+
+	// Top center
+	mesh.positions[0] = vec3(0.0f, half_height, 0.0f);
+	mesh.attributes[0].normal = vec3(0.0f, 1.0f, 0.0f);
+	// Bottom center
+	mesh.positions[1] = vec3(0.0f, -half_height, 0.0f);
+	mesh.attributes[1].normal = vec3(0.0f, -1.0f, 0.0f);
+
+	float inv_density = 1.0f / float(density);
+
+	const float high_ring_h = 0.95f * half_height;
+	const float low_ring_h = -0.95f * half_height;
+
+	// Top ring inner
+	for (unsigned i = 0; i < density; i++)
+	{
+		float rad = 2.0f * pi<float>() * (i + 0.5f) * inv_density;
+		mesh.positions[i + 2] = vec3(0.95f * radius * cos(rad), half_height, -0.95f * radius * sin(rad));
+		mesh.attributes[i + 2].normal = vec3(0.0f, 1.0f, 0.0f);
+	}
+
+	// Top ring
+	for (unsigned i = 0; i < density; i++)
+	{
+		float rad = 2.0f * pi<float>() * (i + 0.5f) * inv_density;
+		mesh.positions[density + i + 2] = vec3(radius * cos(rad), half_height, -radius * sin(rad));
+		mesh.attributes[density + i + 2].normal = normalize(vec3(cos(rad), 1.0f, -sin(rad)));
+	}
+
+	// High ring
+	for (unsigned i = 0; i < density; i++)
+	{
+		float rad = 2.0f * pi<float>() * (i + 0.5f) * inv_density;
+		mesh.positions[2 * density + i + 2] = vec3(radius * cos(rad), high_ring_h, -radius * sin(rad));
+		mesh.attributes[2 * density + i + 2].normal = vec3(cos(rad), 0.0f, -sin(rad));
+	}
+
+	// Low ring
+	for (unsigned i = 0; i < density; i++)
+	{
+		float rad = 2.0f * pi<float>() * (i + 0.5f) * inv_density;
+		mesh.positions[3 * density + i + 2] = vec3(radius * cos(rad), low_ring_h, -radius * sin(rad));
+		mesh.attributes[3 * density + i + 2].normal = vec3(cos(rad), 0.0f, -sin(rad));
+	}
+
+	// Bottom ring
+	for (unsigned i = 0; i < density; i++)
+	{
+		float rad = 2.0f * pi<float>() * (i + 0.5f) * inv_density;
+		mesh.positions[4 * density + i + 2] = vec3(radius * cos(rad), -half_height, -radius * sin(rad));
+		mesh.attributes[4 * density + i + 2].normal = normalize(vec3(cos(rad), -1.0f, -sin(rad)));
+	}
+
+	// Bottom inner ring
+	for (unsigned i = 0; i < density; i++)
+	{
+		float rad = 2.0f * pi<float>() * (i + 0.5f) * inv_density;
+		mesh.positions[5 * density + i + 2] = vec3(0.95f * radius * cos(rad), -half_height, 0.95f * -radius * sin(rad));
+		mesh.attributes[5 * density + i + 2].normal = vec3(0.0f, -1.0f, 0.0f);
+	}
+
+	// Link up top vertices.
+	for (unsigned i = 0; i < density; i++)
+	{
+		mesh.indices.push_back(0);
+		mesh.indices.push_back(i + 2);
+		mesh.indices.push_back(((i + 1) % density) + 2);
+	}
+
+	// Link up bottom vertices.
+	for (unsigned i = 0; i < density; i++)
+	{
+		mesh.indices.push_back(1);
+		mesh.indices.push_back(5 * density + ((i + 1) % density) + 2);
+		mesh.indices.push_back(5 * density + i + 2);
+	}
+
+	// Link up rings.
+	for (unsigned ring = 0; ring < 5; ring++)
+	{
+		unsigned off0 = ring * density + 2;
+		unsigned off1 = off0 + density;
+		for (unsigned i = 0; i < density; i++)
+		{
+			mesh.indices.push_back(off0 + i);
+			mesh.indices.push_back(off1 + i);
+			mesh.indices.push_back(off0 + ((i + 1) % density));
+			mesh.indices.push_back(off1 + ((i + 1) % density));
+			mesh.indices.push_back(off0 + ((i + 1) % density));
+			mesh.indices.push_back(off1 + i);
+		}
+	}
+
+	return mesh;
+}
+
+GeneratedMeshData create_cone_mesh(unsigned density, float height, float radius)
+{
+	GeneratedMeshData mesh;
+	mesh.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+	mesh.primitive_restart = false;
+
+	mesh.positions.resize(4 * density + 2);
+	mesh.attributes.resize(4 * density + 2);
+
+	// Top center
+	mesh.positions[0] = vec3(0.0f, height, 0.0f);
+	mesh.attributes[0].normal = vec3(0.0f, 1.0f, 0.0f);
+	// Bottom center
+	mesh.positions[1] = vec3(0.0f, 0.0f, 0.0f);
+	mesh.attributes[1].normal = vec3(0.0f, -1.0f, 0.0f);
+
+	float inv_density = 1.0f / float(density);
+
+	const float top_ring_h = 0.95f * height;
+	const float top_ring_r = (1.0f - 0.95f) * radius;
+	const float low_ring_h = 0.05f * height;
+	const float low_ring_r = (1.0f - 0.05f) * radius;
+
+	// Top ring
+	for (unsigned i = 0; i < density; i++)
+	{
+		float rad = 2.0f * pi<float>() * (i + 0.5f) * inv_density;
+		mesh.positions[i + 2] = vec3(top_ring_r * cos(rad), top_ring_h, -top_ring_r * sin(rad));
+		mesh.attributes[i + 2].normal = normalize(vec3(height * cos(rad), radius, -height * sin(rad)));
+	}
+
+	// Low ring
+	for (unsigned i = 0; i < density; i++)
+	{
+		float rad = 2.0f * pi<float>() * (i + 0.5f) * inv_density;
+		mesh.positions[density + i + 2] = vec3(low_ring_r * cos(rad), low_ring_h, -low_ring_r * sin(rad));
+		mesh.attributes[density + i + 2].normal = normalize(vec3(height * cos(rad), radius, -height * sin(rad)));
+	}
+
+	// Bottom ring
+	for (unsigned i = 0; i < density; i++)
+	{
+		float rad = 2.0f * pi<float>() * (i + 0.5f) * inv_density;
+		mesh.positions[2 * density + i + 2] = vec3(radius * cos(rad), 0.0f, -radius * sin(rad));
+		mesh.attributes[2 * density + i + 2].normal = normalize(vec3(cos(rad), 0.0f, -sin(rad)));
+	}
+
+	// Inner ring
+	for (unsigned i = 0; i < density; i++)
+	{
+		float rad = 2.0f * pi<float>() * (i + 0.5f) * inv_density;
+		mesh.positions[3 * density + i + 2] = vec3(0.95f * radius * cos(rad), 0.0f, 0.95f * -radius * sin(rad));
+		mesh.attributes[3 * density + i + 2].normal = vec3(0.0f, -1.0f, 0.0f);
+	}
+
+	for (auto &pos : mesh.positions)
+		pos -= vec3(0.0f, 0.5f * height, 0.0f);
+
+	// Link up top vertices.
+	for (unsigned i = 0; i < density; i++)
+	{
+		mesh.indices.push_back(0);
+		mesh.indices.push_back(i + 2);
+		mesh.indices.push_back(((i + 1) % density) + 2);
+	}
+
+	// Link up bottom vertices.
+	for (unsigned i = 0; i < density; i++)
+	{
+		mesh.indices.push_back(1);
+		mesh.indices.push_back(3 * density + ((i + 1) % density) + 2);
+		mesh.indices.push_back(3 * density + i + 2);
+	}
+
+	// Link up top and low rings.
+	for (unsigned i = 0; i < density; i++)
+	{
+		mesh.indices.push_back(i + 2);
+		mesh.indices.push_back(density + i + 2);
+		mesh.indices.push_back(((i + 1) % density) + 2);
+		mesh.indices.push_back(density + ((i + 1) % density) + 2);
+		mesh.indices.push_back(((i + 1) % density) + 2);
+		mesh.indices.push_back(density + i + 2);
+	}
+
+	// Link up low and bottom rings.
+	for (unsigned i = 0; i < density; i++)
+	{
+		mesh.indices.push_back(density + i + 2);
+		mesh.indices.push_back(2 * density + i + 2);
+		mesh.indices.push_back(density + ((i + 1) % density) + 2);
+		mesh.indices.push_back(2 * density + ((i + 1) % density) + 2);
+		mesh.indices.push_back(density + ((i + 1) % density) + 2);
+		mesh.indices.push_back(2 * density + i + 2);
+	}
+
+	// Link up bottom and inner rings.
+	for (unsigned i = 0; i < density; i++)
+	{
+		mesh.indices.push_back(2 * density + i + 2);
+		mesh.indices.push_back(3 * density + i + 2);
+		mesh.indices.push_back(2 * density + ((i + 1) % density) + 2);
+		mesh.indices.push_back(3 * density + ((i + 1) % density) + 2);
+		mesh.indices.push_back(2 * density + ((i + 1) % density) + 2);
+		mesh.indices.push_back(3 * density + i + 2);
+	}
+
+	return mesh;
+}
+
+void GeneratedMesh::setup_from_generated_mesh(Vulkan::Device &device, const GeneratedMeshData &mesh)
+{
 	BufferCreateInfo info = {};
 	info.size = mesh.positions.size() * sizeof(vec3);
 	info.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
 	info.domain = BufferDomain::Device;
 	vbo_position = device.create_buffer(info, mesh.positions.data());
 
-	info.size = mesh.attributes.size() * sizeof(SphereMeshData::Attribute);
+	info.size = mesh.attributes.size() * sizeof(GeneratedMeshData::Attribute);
 	vbo_attributes = device.create_buffer(info, mesh.attributes.data());
 
 	this->attributes[ecast(MeshAttribute::Position)].format = VK_FORMAT_R32G32B32_SFLOAT;
 	this->attributes[ecast(MeshAttribute::Position)].offset = 0;
 	this->attributes[ecast(MeshAttribute::Normal)].format = VK_FORMAT_R32G32B32_SFLOAT;
-	this->attributes[ecast(MeshAttribute::Normal)].offset = offsetof(SphereMeshData::Attribute, normal);
-	this->attributes[ecast(MeshAttribute::UV)].format = VK_FORMAT_R32G32_SFLOAT;
-	this->attributes[ecast(MeshAttribute::UV)].offset = offsetof(SphereMeshData::Attribute, uv);
+	this->attributes[ecast(MeshAttribute::Normal)].offset = offsetof(GeneratedMeshData::Attribute, normal);
+	if (mesh.has_uvs)
+	{
+		this->attributes[ecast(MeshAttribute::UV)].format = VK_FORMAT_R32G32_SFLOAT;
+		this->attributes[ecast(MeshAttribute::UV)].offset = offsetof(GeneratedMeshData::Attribute, uv);
+	}
 	position_stride = sizeof(vec3);
-	attribute_stride = sizeof(SphereMeshData::Attribute);
+	attribute_stride = sizeof(GeneratedMeshData::Attribute);
 
 	info.size = mesh.indices.size() * sizeof(uint16_t);
 	info.usage = VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
@@ -255,12 +572,88 @@ void SphereMesh::on_device_created(const DeviceCreatedEvent &event)
 	ibo_offset = 0;
 	index_type = VK_INDEX_TYPE_UINT16;
 	count = mesh.indices.size();
-	topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP;
+	topology = mesh.topology;
+	primitive_restart = mesh.primitive_restart;
 
 	bake();
 }
 
+SphereMesh::SphereMesh(unsigned density_)
+	: density(density_)
+{
+	static_aabb = AABB(vec3(-1.0f), vec3(1.0f));
+	material = StockMaterials::get().get_checkerboard();
+	EVENT_MANAGER_REGISTER_LATCH(SphereMesh, on_device_created, on_device_destroyed, DeviceCreatedEvent);
+}
+
+void SphereMesh::on_device_created(const DeviceCreatedEvent &event)
+{
+	auto &device = event.get_device();
+	auto mesh = create_sphere_mesh(density);
+	setup_from_generated_mesh(device, mesh);
+}
+
 void SphereMesh::on_device_destroyed(const DeviceCreatedEvent &)
+{
+	reset();
+}
+
+ConeMesh::ConeMesh(unsigned density_, float height_, float radius_)
+	: density(density_), height(height_), radius(radius_)
+{
+	static_aabb = AABB(vec3(-1.0f), vec3(1.0f));
+	material = StockMaterials::get().get_checkerboard();
+	EVENT_MANAGER_REGISTER_LATCH(ConeMesh, on_device_created, on_device_destroyed, DeviceCreatedEvent);
+}
+
+void ConeMesh::on_device_created(const DeviceCreatedEvent &event)
+{
+	auto &device = event.get_device();
+	auto mesh = create_cone_mesh(density, height, radius);
+	setup_from_generated_mesh(device, mesh);
+}
+
+void ConeMesh::on_device_destroyed(const DeviceCreatedEvent &)
+{
+	reset();
+}
+
+CylinderMesh::CylinderMesh(unsigned density_, float height_, float radius_)
+	: density(density_), height(height_), radius(radius_)
+{
+	static_aabb = AABB(vec3(-1.0f), vec3(1.0f));
+	material = StockMaterials::get().get_checkerboard();
+	EVENT_MANAGER_REGISTER_LATCH(CylinderMesh, on_device_created, on_device_destroyed, DeviceCreatedEvent);
+}
+
+void CylinderMesh::on_device_created(const DeviceCreatedEvent &event)
+{
+	auto &device = event.get_device();
+	auto mesh = create_cylinder_mesh(density, height, radius);
+	setup_from_generated_mesh(device, mesh);
+}
+
+void CylinderMesh::on_device_destroyed(const DeviceCreatedEvent &)
+{
+	reset();
+}
+
+CapsuleMesh::CapsuleMesh(unsigned density_, float height_, float radius_)
+	: density(density_), height(height_), radius(radius_)
+{
+	static_aabb = AABB(vec3(-1.0f), vec3(1.0f));
+	material = StockMaterials::get().get_checkerboard();
+	EVENT_MANAGER_REGISTER_LATCH(CapsuleMesh, on_device_created, on_device_destroyed, DeviceCreatedEvent);
+}
+
+void CapsuleMesh::on_device_created(const DeviceCreatedEvent &event)
+{
+	auto &device = event.get_device();
+	auto mesh = create_capsule_mesh(density, height, radius);
+	setup_from_generated_mesh(device, mesh);
+}
+
+void CapsuleMesh::on_device_destroyed(const DeviceCreatedEvent &)
 {
 	reset();
 }
@@ -317,40 +710,40 @@ static const int8_t positions[] = {
 
 static const int8_t attr[] = {
 	// Near
-	0, 0, P, 0, P, 0, 0, 0, 0, P,
-	0, 0, P, 0, P, 0, 0, 0, P, P,
-	0, 0, P, 0, P, 0, 0, 0, 0, 0,
-	0, 0, P, 0, P, 0, 0, 0, P, 0,
+	0, 0, P, 0, P, 0, 0, 0, 0, P, 0, 0,
+	0, 0, P, 0, P, 0, 0, 0, P, P, 0, 0,
+	0, 0, P, 0, P, 0, 0, 0, 0, 0, 0, 0,
+	0, 0, P, 0, P, 0, 0, 0, P, 0, 0, 0,
 
 	// Far
-	0, 0, N, 0, N, 0, 0, 0, 0, P,
-	0, 0, N, 0, N, 0, 0, 0, P, P,
-	0, 0, N, 0, N, 0, 0, 0, 0, 0,
-	0, 0, N, 0, N, 0, 0, 0, P, 0,
+	0, 0, N, 0, N, 0, 0, 0, 0, P, 0, 0,
+	0, 0, N, 0, N, 0, 0, 0, P, P, 0, 0,
+	0, 0, N, 0, N, 0, 0, 0, 0, 0, 0, 0,
+	0, 0, N, 0, N, 0, 0, 0, P, 0, 0, 0,
 
 	// Left
-	N, 0, 0, 0, 0, 0, P, 0, 0, P,
-	N, 0, 0, 0, 0, 0, P, 0, P, P,
-	N, 0, 0, 0, 0, 0, P, 0, 0, 0,
-	N, 0, 0, 0, 0, 0, P, 0, P, 0,
+	N, 0, 0, 0, 0, 0, P, 0, 0, P, 0, 0,
+	N, 0, 0, 0, 0, 0, P, 0, P, P, 0, 0,
+	N, 0, 0, 0, 0, 0, P, 0, 0, 0, 0, 0,
+	N, 0, 0, 0, 0, 0, P, 0, P, 0, 0, 0,
 
 	// Right
-	P, 0, 0, 0, 0, 0, N, 0, 0, P,
-	P, 0, 0, 0, 0, 0, N, 0, P, P,
-	P, 0, 0, 0, 0, 0, N, 0, 0, 0,
-	P, 0, 0, 0, 0, 0, N, 0, P, 0,
+	P, 0, 0, 0, 0, 0, N, 0, 0, P, 0, 0,
+	P, 0, 0, 0, 0, 0, N, 0, P, P, 0, 0,
+	P, 0, 0, 0, 0, 0, N, 0, 0, 0, 0, 0,
+	P, 0, 0, 0, 0, 0, N, 0, P, 0, 0, 0,
 
 	// Top
-	0, P, 0, 0, P, 0, 0, 0, 0, P,
-	0, P, 0, 0, P, 0, 0, 0, P, P,
-	0, P, 0, 0, P, 0, 0, 0, 0, 0,
-	0, P, 0, 0, P, 0, 0, 0, P, 0,
+	0, P, 0, 0, P, 0, 0, 0, 0, P, 0, 0,
+	0, P, 0, 0, P, 0, 0, 0, P, P, 0, 0,
+	0, P, 0, 0, P, 0, 0, 0, 0, 0, 0, 0,
+	0, P, 0, 0, P, 0, 0, 0, P, 0, 0, 0,
 
 	// Bottom
-	0, N, 0, 0, P, 0, 0, 0, 0, P,
-	0, N, 0, 0, P, 0, 0, 0, P, P,
-	0, N, 0, 0, P, 0, 0, 0, 0, 0,
-	0, N, 0, 0, P, 0, 0, 0, P, 0,
+	0, N, 0, 0, P, 0, 0, 0, 0, P, 0, 0,
+	0, N, 0, 0, P, 0, 0, 0, P, P, 0, 0,
+	0, N, 0, 0, P, 0, 0, 0, 0, 0, 0, 0,
+	0, N, 0, 0, P, 0, 0, 0, P, 0, 0, 0,
 };
 
 static const uint16_t indices[] = {
@@ -378,8 +771,8 @@ Mesh CubeMesh::build_plain_mesh()
 	mesh.attribute_layout[ecast(MeshAttribute::Tangent)].offset = 4;
 	mesh.attribute_layout[ecast(MeshAttribute::Tangent)].format = VK_FORMAT_R8G8B8A8_SNORM;
 	mesh.attribute_layout[ecast(MeshAttribute::UV)].offset = 8;
-	mesh.attribute_layout[ecast(MeshAttribute::UV)].format = VK_FORMAT_R8G8_SNORM;
-	mesh.attribute_stride = 10;
+	mesh.attribute_layout[ecast(MeshAttribute::UV)].format = VK_FORMAT_R8G8B8A8_SNORM;
+	mesh.attribute_stride = 12;
 
 	mesh.attributes.resize(sizeof(CubeData::attr));
 	memcpy(mesh.attributes.data(), CubeData::attr, sizeof(CubeData::attr));
@@ -411,8 +804,8 @@ void CubeMesh::on_device_created(const DeviceCreatedEvent &created)
 	attributes[ecast(MeshAttribute::Tangent)].offset = 4;
 	attributes[ecast(MeshAttribute::Tangent)].format = VK_FORMAT_R8G8B8A8_SNORM;
 	attributes[ecast(MeshAttribute::UV)].offset = 8;
-	attributes[ecast(MeshAttribute::UV)].format = VK_FORMAT_R8G8_SNORM;
-	attribute_stride = 10;
+	attributes[ecast(MeshAttribute::UV)].format = VK_FORMAT_R8G8B8A8_SNORM;
+	attribute_stride = 12;
 
 	vbo_info.size = sizeof(CubeData::attr);
 	vbo_attributes = device.create_buffer(vbo_info, CubeData::attr);
@@ -434,8 +827,8 @@ void CubeMesh::on_device_destroyed(const DeviceCreatedEvent &)
 	reset();
 }
 
-SkyCylinder::SkyCylinder(std::string bg_path)
-	: bg_path(move(bg_path))
+SkyCylinder::SkyCylinder(std::string bg_path_)
+	: bg_path(move(bg_path_))
 {
 	EVENT_MANAGER_REGISTER_LATCH(SkyCylinder, on_device_created, on_device_destroyed, DeviceCreatedEvent);
 }
@@ -469,7 +862,7 @@ static void skycylinder_render(CommandBuffer &cmd, const RenderQueueData *infos,
 	{
 		auto *info = static_cast<const SkyCylinderRenderInfo *>(infos[i].render_info);
 
-		cmd.set_program(*info->program);
+		cmd.set_program(info->program);
 		cmd.set_texture(2, 0, *info->view, *info->sampler);
 
 		vec4 color_scale(info->color, info->scale);
@@ -567,7 +960,7 @@ void SkyCylinder::on_device_destroyed(const DeviceCreatedEvent &)
 	sampler.reset();
 }
 
-void SkyCylinder::get_render_info(const RenderContext &, const CachedSpatialTransformComponent *,
+void SkyCylinder::get_render_info(const RenderContext &, const RenderInfoComponent *,
                                   RenderQueue &queue) const
 {
 	SkyCylinderRenderInfo info;
@@ -598,8 +991,8 @@ void SkyCylinder::get_render_info(const RenderContext &, const CachedSpatialTran
 	}
 }
 
-Skybox::Skybox(std::string bg_path, bool latlon)
-	: bg_path(move(bg_path)), is_latlon(latlon)
+Skybox::Skybox(std::string bg_path_, bool latlon)
+	: bg_path(move(bg_path_)), is_latlon(latlon)
 {
 	EVENT_MANAGER_REGISTER_LATCH(Skybox, on_device_created, on_device_destroyed, DeviceCreatedEvent);
 }
@@ -622,7 +1015,7 @@ static void skybox_render(CommandBuffer &cmd, const RenderQueueData *infos, unsi
 	{
 		auto *info = static_cast<const SkyboxRenderInfo *>(infos[i].render_info);
 
-		cmd.set_program(*info->program);
+		cmd.set_program(info->program);
 
 		if (info->view)
 			cmd.set_texture(2, 0, *info->view, *info->sampler);
@@ -634,7 +1027,7 @@ static void skybox_render(CommandBuffer &cmd, const RenderQueueData *infos, unsi
 	}
 }
 
-void Skybox::get_render_info(const RenderContext &context, const CachedSpatialTransformComponent *,
+void Skybox::get_render_info(const RenderContext &context, const RenderInfoComponent *,
                              RenderQueue &queue) const
 {
 	SkyboxRenderInfo info;
@@ -664,8 +1057,8 @@ void Skybox::get_render_info(const RenderContext &context, const CachedSpatialTr
 
 	if (skydome_info)
 	{
-		auto flags = info.view ? MATERIAL_EMISSIVE_BIT : 0;
-		info.program = queue.get_shader_suites()[ecast(RenderableType::Skybox)].get_program(DrawPipeline::Opaque, 0, flags);
+		auto shader_flags = info.view ? MATERIAL_EMISSIVE_BIT : 0;
+		info.program = queue.get_shader_suites()[ecast(RenderableType::Skybox)].get_program(DrawPipeline::Opaque, 0, shader_flags);
 		*skydome_info = info;
 	}
 }
@@ -737,7 +1130,7 @@ static void texture_plane_render(CommandBuffer &cmd, const RenderQueueData *info
 	for (unsigned i = 0; i < instances; i++)
 	{
 		auto &info = *static_cast<const TexturePlaneInfo *>(infos[i].render_info);
-		cmd.set_program(*info.program);
+		cmd.set_program(info.program);
 		if (info.reflection)
 			cmd.set_texture(2, 0, *info.reflection, Vulkan::StockSampler::TrilinearClamp);
 		if (info.refraction)
@@ -750,8 +1143,8 @@ static void texture_plane_render(CommandBuffer &cmd, const RenderQueueData *info
 	}
 }
 
-TexturePlane::TexturePlane(const std::string &normal)
-	: normal_path(normal)
+TexturePlane::TexturePlane(const std::string &normal_)
+	: normal_path(normal_)
 {
 	EVENT_MANAGER_REGISTER_LATCH(TexturePlane, on_device_created, on_device_destroyed, DeviceCreatedEvent);
 	EVENT_MANAGER_REGISTER(TexturePlane, on_frame_time, FrameTickEvent);
@@ -792,9 +1185,9 @@ void TexturePlane::setup_render_pass_dependencies(RenderGraph &, RenderPass &tar
 		target.add_texture_input(refraction_name);
 }
 
-void TexturePlane::set_scene(Scene *scene)
+void TexturePlane::set_scene(Scene *scene_)
 {
-	this->scene = scene;
+	scene = scene_;
 }
 
 void TexturePlane::render_main_pass(Vulkan::CommandBuffer &cmd, const mat4 &proj, const mat4 &view)
@@ -816,12 +1209,12 @@ void TexturePlane::render_main_pass(Vulkan::CommandBuffer &cmd, const mat4 &proj
 	renderer->flush(cmd, context);
 }
 
-void TexturePlane::set_plane(const vec3 &position, const vec3 &normal, const vec3 &up, float extent_up,
+void TexturePlane::set_plane(const vec3 &position_, const vec3 &normal_, const vec3 &up_, float extent_up,
                              float extent_across)
 {
-	this->position = position;
-	this->normal = normal;
-	this->up = up;
+	position = position_;
+	normal = normal_;
+	up = up_;
 	rad_up = extent_up;
 	rad_x = extent_across;
 
@@ -829,17 +1222,20 @@ void TexturePlane::set_plane(const vec3 &position, const vec3 &normal, const vec
 	dpdy = normalize(up) * -extent_up;
 }
 
-void TexturePlane::set_zfar(float zfar)
+void TexturePlane::set_zfar(float zfar_)
 {
-	this->zfar = zfar;
+	zfar = zfar_;
 }
 
 void TexturePlane::add_render_pass(RenderGraph &graph, Type type)
 {
 	auto &device = graph.get_device();
+	bool supports_32bpp =
+			device.image_format_is_supported(VK_FORMAT_B10G11R11_UFLOAT_PACK32,
+			                                 VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT);
 
 	AttachmentInfo color, depth, reflection_blur;
-	color.format = VK_FORMAT_B10G11R11_UFLOAT_PACK32;
+	color.format = supports_32bpp ? VK_FORMAT_B10G11R11_UFLOAT_PACK32 : VK_FORMAT_R16G16B16A16_SFLOAT;
 	depth.format = device.get_default_depth_format();
 
 	color.size_x = scale_x;
@@ -935,12 +1331,12 @@ void TexturePlane::set_base_renderer(Renderer *forward, Renderer *, Renderer *)
 	this->renderer = forward;
 }
 
-void TexturePlane::set_base_render_context(const RenderContext *context)
+void TexturePlane::set_base_render_context(const RenderContext *context_)
 {
-	base_context = context;
+	base_context = context_;
 }
 
-void TexturePlane::get_render_info(const RenderContext &context, const CachedSpatialTransformComponent *,
+void TexturePlane::get_render_info(const RenderContext &context_, const RenderInfoComponent *,
                                    RenderQueue &queue) const
 {
 	TexturePlaneInfo info;
@@ -969,7 +1365,7 @@ void TexturePlane::get_render_info(const RenderContext &context, const CachedSpa
 
 	h.u64(info.normal->get_cookie());
 	auto instance_key = h.get();
-	auto sorting_key = RenderInfo::get_sort_key(context, Queue::OpaqueEmissive, h.get(), h.get(), position);
+	auto sorting_key = RenderInfo::get_sort_key(context_, Queue::OpaqueEmissive, h.get(), h.get(), position);
 	auto *plane_info = queue.push<TexturePlaneInfo>(Queue::OpaqueEmissive, instance_key, sorting_key,
 	                                                texture_plane_render, nullptr);
 

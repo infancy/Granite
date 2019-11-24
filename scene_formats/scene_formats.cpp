@@ -1,4 +1,4 @@
-/* Copyright (c) 2017-2018 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2019 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -279,7 +279,7 @@ Mesh mesh_optimize_index_buffer(const Mesh &mesh, bool stripify)
 		vector<uint32_t> stripped_index_buffer((index_buffer.size() / 3) * 4);
 		size_t stripped_index_count = meshopt_stripify(stripped_index_buffer.data(),
 		                                               index_buffer.data(), index_buffer.size(),
-		                                               vertex_count);
+		                                               vertex_count, ~0u);
 
 		stripped_index_buffer.resize(stripped_index_count);
 		if (stripped_index_count < index_buffer.size())
@@ -360,8 +360,8 @@ bool mesh_recompute_tangents(Mesh &mesh)
 	};
 
 	iface.m_getNormal = [](const SMikkTSpaceContext *ctx, float normals[],
-	                       const int iface, const int ivert) {
-		int i = iface * 3 + ivert;
+	                       const int face_index, const int vert_index) {
+		int i = face_index * 3 + vert_index;
 		const Mesh *m = static_cast<const Mesh *>(ctx->m_pUserData);
 		memcpy(normals, m->attributes.data() + i * m->attribute_stride +
 		                m->attribute_layout[ecast(MeshAttribute::Normal)].offset,
@@ -369,8 +369,8 @@ bool mesh_recompute_tangents(Mesh &mesh)
 	};
 
 	iface.m_getTexCoord = [](const SMikkTSpaceContext *ctx, float normals[],
-	                         const int iface, const int ivert) {
-		int i = iface * 3 + ivert;
+	                         const int face_index, const int vert_index) {
+		int i = face_index * 3 + vert_index;
 		const Mesh *m = static_cast<const Mesh *>(ctx->m_pUserData);
 		memcpy(normals, m->attributes.data() + i * m->attribute_stride +
 		                m->attribute_layout[ecast(MeshAttribute::UV)].offset,
@@ -378,16 +378,16 @@ bool mesh_recompute_tangents(Mesh &mesh)
 	};
 
 	iface.m_getPosition = [](const SMikkTSpaceContext *ctx, float positions[],
-	                         const int iface, const int ivert) {
-		int i = iface * 3 + ivert;
+	                         const int face_index, const int vert_index) {
+		int i = face_index * 3 + vert_index;
 		const Mesh *m = static_cast<const Mesh *>(ctx->m_pUserData);
 		memcpy(positions, m->positions.data() + i * m->position_stride,
 		       sizeof(vec3));
 	};
 
 	iface.m_setTSpaceBasic = [](const SMikkTSpaceContext *ctx, const float tangent[], const float sign,
-	                            const int iface, const int ivert) {
-		int i = iface * 3 + ivert;
+	                            const int face_index, const int vert_index) {
+		int i = face_index * 3 + vert_index;
 		Mesh *m = static_cast<Mesh *>(ctx->m_pUserData);
 		// Invert the sign because of glTF convention.
 		vec4 t(tangent[0], tangent[1], tangent[2], -sign);
@@ -588,6 +588,56 @@ unordered_set<uint32_t> build_used_nodes_in_scene(const SceneNodes &scene, const
 	for (auto &node : scene.node_indices)
 		touch_node_children(touched, nodes, node);
 	return touched;
+}
+
+bool extract_collision_mesh(CollisionMesh &col, const Mesh &mesh)
+{
+	if (mesh.topology != VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST)
+		return false;
+
+	col.indices.clear();
+	col.positions.clear();
+
+	size_t vertex_count = mesh.positions.size() / mesh.position_stride;
+	col.positions.reserve(vertex_count);
+
+	switch (mesh.attribute_layout[ecast(MeshAttribute::Position)].format)
+	{
+	case VK_FORMAT_R32G32B32_SFLOAT:
+	case VK_FORMAT_R32G32B32A32_SFLOAT:
+		for (size_t i = 0; i < vertex_count; i++)
+		{
+			const auto *v = reinterpret_cast<const vec3 *>(mesh.positions.data() + i * mesh.position_stride);
+			col.positions.emplace_back(*v, 1.0f);
+		}
+		break;
+
+	default:
+		return false;
+	}
+
+	if (mesh.indices.empty())
+	{
+		col.indices.reserve(vertex_count);
+		for (size_t i = 0; i < vertex_count; i++)
+			col.indices.push_back(uint32_t(i));
+	}
+	else if (mesh.index_type == VK_INDEX_TYPE_UINT16)
+	{
+		col.indices.reserve(mesh.count);
+		for (unsigned i = 0; i < mesh.count; i++)
+			col.indices.push_back(reinterpret_cast<const uint16_t *>(mesh.indices.data())[i]);
+	}
+	else if (mesh.index_type == VK_INDEX_TYPE_UINT32)
+	{
+		col.indices.reserve(mesh.count);
+		for (unsigned i = 0; i < mesh.count; i++)
+			col.indices.push_back(reinterpret_cast<const uint32_t *>(mesh.indices.data())[i]);
+	}
+	else
+		return false;
+
+	return true;
 }
 }
 }

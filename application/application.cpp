@@ -1,4 +1,4 @@
-/* Copyright (c) 2017-2018 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2019 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -32,6 +32,7 @@
 #include "muglm/matrix_helper.hpp"
 #include "muglm/muglm_impl.hpp"
 #include "utils/image_utils.hpp"
+#include "thread_group.hpp"
 #ifdef HAVE_GRANITE_AUDIO
 #include "audio_mixer.hpp"
 #endif
@@ -48,8 +49,8 @@ Application::Application()
 bool Application::init_wsi(std::unique_ptr<WSIPlatform> new_platform)
 {
 	platform = move(new_platform);
-	wsi.set_platform(platform.get());
-	if (!platform->has_external_swapchain() && !wsi.init())
+	application_wsi.set_platform(platform.get());
+	if (!platform->has_external_swapchain() && !application_wsi.init(Global::thread_group()->get_num_threads() + 1))
 		return false;
 
 	return true;
@@ -70,22 +71,38 @@ bool Application::poll()
 		fs->poll_notifications();
 	if (em)
 		em->dispatch();
+
 #ifdef HAVE_GRANITE_AUDIO
 	auto *backend = Global::audio_backend();
 	if (backend)
 		backend->heartbeat();
 	auto *am = Global::audio_mixer();
 	if (am)
+	{
+		// Pump through events from audio thread.
+		auto &queue = am->get_message_queue();
+		Util::MessageQueuePayload payload;
+		while ((payload = queue.read_message()))
+		{
+			auto &event = payload.as<Event>();
+			if (em)
+				em->dispatch_inline(event);
+			queue.recycle_payload(std::move(payload));
+		}
+
+		// Recycle dead streams.
 		am->dispose_dead_streams();
+	}
 #endif
+
 	return true;
 }
 
 void Application::run_frame()
 {
-	wsi.begin_frame();
-	render_frame(wsi.get_smooth_frame_time(), wsi.get_smooth_elapsed_time());
-	wsi.end_frame();
+	application_wsi.begin_frame();
+	render_frame(application_wsi.get_smooth_frame_time(), application_wsi.get_smooth_elapsed_time());
+	application_wsi.end_frame();
 }
 
 }

@@ -1,4 +1,4 @@
-/* Copyright (c) 2017-2018 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2019 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -74,7 +74,7 @@ namespace RenderFunctions
 {
 void mesh_set_state(CommandBuffer &cmd, const StaticMeshInfo &info)
 {
-	cmd.set_program(*info.program);
+	cmd.set_program(info.program);
 
 	if (info.alpha_test)
 		cmd.set_multisample_state(false, false, true);
@@ -107,7 +107,7 @@ void debug_mesh_render(CommandBuffer &cmd, const RenderQueueData *infos, unsigne
 {
 	auto *info = static_cast<const DebugMeshInfo *>(infos->render_info);
 
-	cmd.set_program(*info->program);
+	cmd.set_program(info->program);
 	cmd.push_constants(&info->MVP, 0, sizeof(info->MVP));
 	cmd.set_primitive_topology(VK_PRIMITIVE_TOPOLOGY_LINE_LIST);
 	cmd.set_vertex_attrib(0, 0, VK_FORMAT_R32G32B32_SFLOAT, 0);
@@ -165,9 +165,9 @@ void skinned_mesh_render(CommandBuffer &cmd, const RenderQueueData *infos, unsig
 	{
 		auto &info = *static_cast<const SkinnedMeshInstanceInfo *>(infos[i].instance_data);
 		auto *world_transforms = static_cast<mat4 *>(cmd.allocate_constant_data(3, 1, sizeof(mat4) * info.num_bones));
-		auto *normal_transforms = static_cast<mat4 *>(cmd.allocate_constant_data(3, 2, sizeof(mat4) * info.num_bones));
+		//auto *normal_transforms = static_cast<mat4 *>(cmd.allocate_constant_data(3, 2, sizeof(mat4) * info.num_bones));
 		memcpy(world_transforms, info.world_transforms, sizeof(mat4) * info.num_bones);
-		memcpy(normal_transforms, info.normal_transforms, sizeof(mat4) * info.num_bones);
+		//memcpy(normal_transforms, info.normal_transforms, sizeof(mat4) * info.num_bones);
 
 		if (static_info->ibo)
 			cmd.draw_indexed(static_info->count, 1, static_info->ibo_offset, static_info->vertex_offset, 0);
@@ -222,7 +222,7 @@ static Queue material_to_queue(const Material &mat)
 		return Queue::Opaque;
 }
 
-void StaticMesh::get_render_info(const RenderContext &context, const CachedSpatialTransformComponent *transform, RenderQueue &queue) const
+void StaticMesh::get_render_info(const RenderContext &context, const RenderInfoComponent *transform, RenderQueue &queue) const
 {
 	auto type = material_to_queue(*material);
 	uint32_t attrs = 0;
@@ -246,7 +246,7 @@ void StaticMesh::get_render_info(const RenderContext &context, const CachedSpati
 	auto *t = transform->transform;
 	auto *instance_data = queue.allocate_one<StaticMeshInstanceInfo>();
 	instance_data->vertex.Model = t->world_transform;
-	instance_data->vertex.Normal = t->normal_transform;
+	//instance_data->vertex.Normal = t->normal_transform;
 
 	auto *mesh_info = queue.push<StaticMeshInfo>(type, instance_key, sorting_key,
 	                                             RenderFunctions::static_mesh_render,
@@ -268,7 +268,7 @@ void StaticMesh::get_render_info(const RenderContext &context, const CachedSpati
 	}
 }
 
-void SkinnedMesh::get_render_info(const RenderContext &context, const CachedSpatialTransformComponent *transform, RenderQueue &queue) const
+void SkinnedMesh::get_render_info(const RenderContext &context, const RenderInfoComponent *transform, RenderQueue &queue) const
 {
 	auto type = material_to_queue(*material);
 	uint32_t attrs = 0;
@@ -300,9 +300,9 @@ void SkinnedMesh::get_render_info(const RenderContext &context, const CachedSpat
 	unsigned num_bones = transform->skin_transform->bone_world_transforms.size();
 	instance_data->num_bones = num_bones;
 	instance_data->world_transforms = queue.allocate_many<mat4>(num_bones);
-	instance_data->normal_transforms = queue.allocate_many<mat4>(num_bones);
+	//instance_data->normal_transforms = queue.allocate_many<mat4>(num_bones);
 	memcpy(instance_data->world_transforms, transform->skin_transform->bone_world_transforms.data(), num_bones * sizeof(mat4));
-	memcpy(instance_data->normal_transforms, transform->skin_transform->bone_normal_transforms.data(), num_bones * sizeof(mat4));
+	//memcpy(instance_data->normal_transforms, transform->skin_transform->bone_normal_transforms.data(), num_bones * sizeof(mat4));
 
 	auto *mesh_info = queue.push<StaticMeshInfo>(type, instance_key, sorting_key,
 	                                             RenderFunctions::skinned_mesh_render,

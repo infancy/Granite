@@ -1,4 +1,4 @@
-/* Copyright (c) 2017-2018 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2019 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -49,30 +49,31 @@ Stage GLSLCompiler::stage_from_path(const std::string &path)
 	else if (ext == "comp")
 		return Stage::Compute;
 	else
-		throw logic_error("invalid extension");
+		return Stage::Unknown;
 }
 
-void GLSLCompiler::set_source_from_file(const string &path)
+bool GLSLCompiler::set_source_from_file(const string &path)
 {
 	if (!Global::filesystem()->read_file_to_string(path, source))
 	{
 		LOGE("Failed to load shader: %s\n", path.c_str());
-		throw runtime_error("Failed to load shader.");
+		return false;
 	}
 
 	source_path = path;
 	stage = stage_from_path(path);
+	return stage != Stage::Unknown;
 }
 
-void GLSLCompiler::set_include_directories(const std::vector<std::string> *include_directories)
+void GLSLCompiler::set_include_directories(const std::vector<std::string> *include_directories_)
 {
-	this->include_directories = include_directories;
+	include_directories = include_directories_;
 }
 
-bool GLSLCompiler::find_include_path(const string &source_path, const string &include_path,
+bool GLSLCompiler::find_include_path(const string &source_path_, const string &include_path,
                                      string &included_path, string &included_source)
 {
-	auto relpath = Path::relpath(source_path, include_path);
+	auto relpath = Path::relpath(source_path_, include_path);
 	if (Global::filesystem()->read_file_to_string(relpath, included_source))
 	{
 		included_path = relpath;
@@ -95,9 +96,9 @@ bool GLSLCompiler::find_include_path(const string &source_path, const string &in
 	return false;
 }
 
-bool GLSLCompiler::parse_variants(const string &source, const string &path)
+bool GLSLCompiler::parse_variants(const string &source_, const string &path)
 {
-	auto lines = Util::split(source, "\n");
+	auto lines = Util::split(source_, "\n");
 
 	unsigned line_index = 0;
 	for (auto &line : lines)
@@ -223,6 +224,9 @@ vector<uint32_t> GLSLCompiler::compile(const vector<pair<string, int>> *defines)
 	case Stage::Compute:
 		kind = shaderc_glsl_compute_shader;
 		break;
+
+	default:
+		return {};
 	}
 	shaderc::SpvCompilationResult result = compiler.CompileGlslToSpv(preprocessed_source, kind, source_path.c_str(), options);
 
@@ -241,7 +245,9 @@ vector<uint32_t> GLSLCompiler::compile(const vector<pair<string, int>> *defines)
 		error_message = message;
 	});
 
-	if (!core.Validate(compiled_spirv))
+	spvtools::ValidatorOptions opts;
+	opts.SetScalarBlockLayout(true);
+	if (!core.Validate(compiled_spirv.data(), compiled_spirv.size(), opts))
 	{
 		LOGE("Failed to validate SPIR-V.\n");
 		return {};

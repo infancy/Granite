@@ -1,4 +1,4 @@
-/* Copyright (c) 2017-2018 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2019 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -63,5 +63,14 @@ inline void transform_texture_layout(const Vulkan::TextureFormatLayout &layout, 
 
 MemoryMappedTexture generate_mipmaps(const Vulkan::TextureFormatLayout &layout, MemoryMappedTextureFlags flags);
 MemoryMappedTexture generate_mipmaps_to_file(const std::string &path, const Vulkan::TextureFormatLayout &layout, MemoryMappedTextureFlags flags);
+MemoryMappedTexture fixup_alpha_edges(const Vulkan::TextureFormatLayout &layout, MemoryMappedTextureFlags flags);
+
+enum class TransparencyType
+{
+	None,
+	Binary,
+	Floating
+};
+TransparencyType image_slice_contains_transparency(const Vulkan::TextureFormatLayout &layout, unsigned layer, unsigned level);
 }
 }

@@ -1,4 +1,4 @@
-/* Copyright (c) 2017-2018 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2019 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -31,8 +31,8 @@ namespace Granite
 {
 namespace UI
 {
-Image::Image(const std::string &path)
-	: path(path)
+Image::Image(const std::string &path_)
+	: path(path_)
 {
 	EVENT_MANAGER_REGISTER_LATCH(Image, on_device_created, on_device_destroyed, DeviceCreatedEvent);
 }
@@ -87,7 +87,7 @@ void Image::reconfigure_to_canvas(vec2, vec2 size)
 float Image::render(FlatRenderer &renderer, float layer, vec2 offset, vec2)
 {
 	renderer.render_textured_quad(texture->get_image()->get_view(), vec3(offset + sprite_offset, layer), sprite_size,
-	                              vec2(0.0f), image_size, true, vec4(1.0f), sampler);
+	                              vec2(0.0f), image_size, DrawPipeline::AlphaBlend, vec4(1.0f), sampler);
 	return layer;
 }
 

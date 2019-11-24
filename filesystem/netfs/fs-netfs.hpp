@@ -1,4 +1,4 @@
-/* Copyright (c) 2017-2018 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2019 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -35,7 +35,7 @@ struct FSReader;
 class NetworkFile : public File
 {
 public:
-	NetworkFile(Looper &looper, const std::string &path, FileMode mode);
+	static NetworkFile *open(Looper &looper, const std::string &path, FileMode mode);
 	~NetworkFile();
 	void *map() override;
 	void *map_write(size_t size) override;
@@ -44,9 +44,11 @@ public:
 	bool reopen() override;
 
 private:
+	NetworkFile() = default;
+	bool init(Looper &looper, const std::string &path, FileMode mode);
 	std::string path;
 	FileMode mode;
-	Looper &looper;
+	Looper *looper = nullptr;
 	std::future<std::vector<uint8_t>> future;
 	std::vector<uint8_t> buffer;
 	bool has_buffer = false;

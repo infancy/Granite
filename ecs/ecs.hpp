@@ -1,4 +1,4 @@
-/* Copyright (c) 2017-2018 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2019 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -44,6 +44,15 @@ inline T *get_component(Tup &t)
 {
 	return std::get<T *>(t);
 }
+
+template <typename T>
+inline T *get(const std::tuple<T *> &t)
+{
+	return std::get<0>(t);
+}
+
+template <typename... Ts>
+using ComponentGroupVector = std::vector<std::tuple<Ts *...>>;
 
 class Entity;
 
@@ -108,6 +117,7 @@ public:
 	virtual ~EntityGroupBase() = default;
 	virtual void add_entity(Entity &entity) = 0;
 	virtual void remove_entity(const Entity &entity) = 0;
+	virtual void reset() = 0;
 };
 
 class EntityPool;
@@ -117,13 +127,13 @@ struct EntityDeleter
 	void operator()(Entity *entity);
 };
 
-class Entity : public Util::IntrusivePtrEnabled<Entity, EntityDeleter>
+class Entity : public Util::IntrusiveListEnabled<Entity>
 {
 public:
 	friend class EntityPool;
 
-	Entity(EntityPool *pool, Util::Hash hash)
-		: pool(pool), hash(hash)
+	Entity(EntityPool *pool_, Util::Hash hash_)
+		: pool(pool_), hash(hash_)
 	{
 	}
 
@@ -180,11 +190,19 @@ public:
 		return hash;
 	}
 
+	bool mark_for_destruction()
+	{
+		bool ret = !marked;
+		marked = true;
+		return ret;
+	}
+
 private:
 	EntityPool *pool;
 	Util::Hash hash;
 	size_t pool_offset = 0;
 	ComponentHashMap components;
+	bool marked = false;
 };
 
 template <typename... Ts>
@@ -216,13 +234,25 @@ public:
 		}
 	}
 
-	std::vector<std::tuple<Ts *...>> &get_groups()
+	ComponentGroupVector<Ts...> &get_groups()
 	{
 		return groups;
 	}
 
+	const std::vector<Entity *> &get_entities() const
+	{
+		return entities;
+	}
+
+	void reset() override final
+	{
+		groups.clear();
+		entities.clear();
+		entity_to_index.clear();
+	}
+
 private:
-	std::vector<std::tuple<Ts *...>> groups;
+	ComponentGroupVector<Ts...> groups;
 	std::vector<Entity *> entities;
 	Util::IntrusiveHashMap<Util::IntrusivePODWrapper<size_t>> entity_to_index;
 
@@ -273,8 +303,6 @@ struct ComponentAllocator : public ComponentAllocatorBase
 	}
 };
 
-using EntityHandle = Util::IntrusivePtr<Entity>;
-
 class EntityPool
 {
 public:
@@ -284,11 +312,11 @@ public:
 	void operator=(const EntityPool &) = delete;
 	EntityPool(const EntityPool &) = delete;
 
-	EntityHandle create_entity();
+	Entity *create_entity();
 	void delete_entity(Entity *entity);
 
 	template <typename... Ts>
-	std::vector<std::tuple<Ts *...>> &get_component_group()
+	EntityGroup<Ts...> *get_component_group_holder()
 	{
 		ComponentType group_id = ComponentIDMapping::get_group_id<Ts...>();
 		auto *t = groups.find(group_id);
@@ -305,8 +333,21 @@ public:
 				group->add_entity(*entity);
 		}
 
-		auto *group = static_cast<EntityGroup<Ts...> *>(t);
+		return static_cast<EntityGroup<Ts...> *>(t);
+	}
+
+	template <typename... Ts>
+	ComponentGroupVector<Ts...> &get_component_group()
+	{
+		auto *group = get_component_group_holder<Ts...>();
 		return group->get_groups();
+	}
+
+	template <typename... Ts>
+	const std::vector<Entity *> &get_component_entities()
+	{
+		auto *group = get_component_group_holder<Ts...>();
+		return group->get_entities();
 	}
 
 	template <typename T, typename... Ts>
@@ -350,6 +391,7 @@ public:
 
 	void free_component(Entity &entity, ComponentType id, ComponentNode *component);
 	void reset_groups();
+	void reset_groups_for_component_type(ComponentType id);
 
 private:
 	Util::ObjectPool<Entity> entity_pool;
@@ -389,6 +431,8 @@ private:
 	{
 		GroupRegisters<U, Us...>::register_group(component_to_groups, group_id);
 	}
+
+	void free_groups();
 };
 
 template <typename T, typename... Ts>

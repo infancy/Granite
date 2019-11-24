@@ -1,4 +1,4 @@
-/* Copyright (c) 2017-2018 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2019 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -23,6 +23,8 @@
 #pragma once
 
 #include <stdint.h>
+#include <memory>
+#include <limits>
 
 namespace Granite
 {
@@ -30,6 +32,7 @@ class Filesystem;
 class ThreadGroup;
 class EventManager;
 class CommonRendererData;
+class PhysicsSystem;
 namespace UI
 {
 class UIManager;
@@ -51,12 +54,27 @@ enum ManagerFeatureFlagBits
 	MANAGER_FEATURE_UI_MANAGER_BIT = 1 << 3,
 	MANAGER_FEATURE_AUDIO_BIT = 1 << 4,
 	MANAGER_FEATURE_COMMON_RENDERER_DATA_BIT = 1 << 5,
+	MANAGER_FEATURE_PHYSICS_BIT = 1 << 6,
 	MANAGER_FEATURE_ALL_BITS = 0x7fffffff
 };
 using ManagerFeatureFlags = uint32_t;
 
-void init(ManagerFeatureFlags flags = MANAGER_FEATURE_ALL_BITS);
+void init(ManagerFeatureFlags flags = MANAGER_FEATURE_ALL_BITS,
+          unsigned max_threads = std::numeric_limits<unsigned>::max());
 void deinit();
+
+// Used if the application wants to use multiple instances of Granite in the same process.
+// This allows each thread to be associated to a global context.
+struct GlobalManagers;
+struct GlobalManagerDeleter
+{
+	void operator()(GlobalManagers *managers);
+};
+using GlobalManagersHandle = std::unique_ptr<GlobalManagers, GlobalManagerDeleter>;
+GlobalManagersHandle create_thread_context();
+void delete_thread_context(GlobalManagers *managers);
+void set_thread_context(const GlobalManagers &managers);
+void clear_thread_context();
 
 void start_audio_system();
 void stop_audio_system();
@@ -70,6 +88,10 @@ CommonRendererData *common_renderer_data();
 Audio::Backend *audio_backend();
 Audio::Mixer *audio_mixer();
 void install_audio_system(Audio::Backend *backend, Audio::Mixer *mixer);
+#endif
+
+#ifdef HAVE_GRANITE_PHYSICS
+PhysicsSystem *physics();
 #endif
 }
 

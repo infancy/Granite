@@ -1,4 +1,4 @@
-/* Copyright (c) 2017-2018 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2019 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -25,6 +25,7 @@
 #include "renderer.hpp"
 #include "render_context.hpp"
 #include "muglm/matrix_helper.hpp"
+#include "transforms.hpp"
 
 using namespace Vulkan;
 using namespace std;
@@ -75,6 +76,7 @@ struct GroundData
 	vec2 uv_shift;
 	vec2 uv_tiling_scale;
 	vec2 tangent_scale;
+	vec4 texture_info;
 };
 
 struct PatchData
@@ -91,7 +93,7 @@ static void ground_patch_render(Vulkan::CommandBuffer &cmd, const RenderQueueDat
 {
 	auto &patch = *static_cast<const PatchInfo *>(infos->render_info);
 
-	cmd.set_program(*patch.program);
+	cmd.set_program(patch.program);
 	cmd.set_primitive_topology(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP);
 	//cmd.set_wireframe(true);
 	cmd.set_primitive_restart(true);
@@ -114,6 +116,10 @@ static void ground_patch_render(Vulkan::CommandBuffer &cmd, const RenderQueueDat
 	data->uv_shift = vec2(0.0f);
 	data->uv_tiling_scale = patch.tiling_factor;
 	data->tangent_scale = patch.tangent_scale;
+	data->texture_info.x = float(patch.base_color->get_image().get_width(0));
+	data->texture_info.y = float(patch.base_color->get_image().get_height(0));
+	data->texture_info.z = 1.0f / float(patch.base_color->get_image().get_width(0));
+	data->texture_info.w = 1.0f / float(patch.base_color->get_image().get_height(0));
 
 	cmd.push_constants(patch.push, 0, sizeof(patch.push));
 
@@ -124,10 +130,10 @@ static void ground_patch_render(Vulkan::CommandBuffer &cmd, const RenderQueueDat
 		auto *patches = static_cast<PatchData *>(cmd.allocate_constant_data(3, 0, sizeof(PatchData) * to_render));
 		for (unsigned j = 0; j < to_render; j++)
 		{
-			auto &patch = *static_cast<const PatchInstanceInfo *>(infos[i + j].instance_data);
-			patches->LODs = patch.lods;
-			patches->InnerLOD = patch.inner_lod;
-			patches->Offset = patch.offsets;
+			auto &patch_info = *static_cast<const PatchInstanceInfo *>(infos[i + j].instance_data);
+			patches->LODs = patch_info.lods;
+			patches->InnerLOD = patch_info.inner_lod;
+			patches->Offset = patch_info.offsets;
 			patches++;
 		}
 
@@ -136,15 +142,15 @@ static void ground_patch_render(Vulkan::CommandBuffer &cmd, const RenderQueueDat
 }
 }
 
-void GroundPatch::set_bounds(vec3 offset, vec3 size)
+void GroundPatch::set_bounds(vec3 offset_, vec3 size_)
 {
-	this->offset = offset.xz();
-	this->size = size.xz();
-	aabb = AABB(offset, offset + size);
+	offset = offset_.xz();
+	size = size_.xz();
+	aabb = AABB(offset_, offset_ + size_);
 }
 
-GroundPatch::GroundPatch(Util::IntrusivePtr<Ground> ground)
-	: ground(ground)
+GroundPatch::GroundPatch(Util::IntrusivePtr<Ground> ground_)
+	: ground(std::move(ground_))
 {
 }
 
@@ -152,7 +158,7 @@ GroundPatch::~GroundPatch()
 {
 }
 
-void GroundPatch::refresh(RenderContext &context, const CachedSpatialTransformComponent *transform)
+void GroundPatch::refresh(RenderContext &context, const RenderInfoComponent *transform)
 {
 	vec3 center = transform->world_aabb.get_center();
 	const auto &camera_pos = context.get_render_parameters().camera_position;
@@ -161,14 +167,14 @@ void GroundPatch::refresh(RenderContext &context, const CachedSpatialTransformCo
 	*lod = clamp(dist_log2 + lod_bias + ground->get_base_lod_bias(), 0.0f, ground->get_info().max_lod);
 }
 
-void GroundPatch::get_render_info(const RenderContext &context, const CachedSpatialTransformComponent *transform,
+void GroundPatch::get_render_info(const RenderContext &context, const RenderInfoComponent *transform,
                                   RenderQueue &queue) const
 {
 	ground->get_render_info(context, transform, queue, *this);
 }
 
-Ground::Ground(unsigned size, const TerrainInfo &info)
-	: size(size), info(info)
+Ground::Ground(unsigned size_, const TerrainInfo &info_)
+	: size(size_), info(info_)
 {
 	assert(size % info.base_patch_size == 0);
 	num_patches_x = size / info.base_patch_size;
@@ -189,27 +195,27 @@ void Ground::on_device_created(const DeviceCreatedEvent &created)
 	type_map = device.get_texture_manager().request_texture(info.splatmap);
 	build_buffers(device);
 
-	ImageCreateInfo info = {};
-	info.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
-	info.domain = ImageDomain::Physical;
-	info.width = num_patches_x;
-	info.height = num_patches_z;
-	info.levels = 1;
-	info.format = VK_FORMAT_R16_SFLOAT;
-	info.type = VK_IMAGE_TYPE_2D;
-	info.depth = 1;
-	info.samples = VK_SAMPLE_COUNT_1_BIT;
-	info.initial_layout = VK_IMAGE_LAYOUT_UNDEFINED;
-	lod_map = device.create_image(info, nullptr);
+	ImageCreateInfo image_info = {};
+	image_info.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+	image_info.domain = ImageDomain::Physical;
+	image_info.width = num_patches_x;
+	image_info.height = num_patches_z;
+	image_info.levels = 1;
+	image_info.format = VK_FORMAT_R16_SFLOAT;
+	image_info.type = VK_IMAGE_TYPE_2D;
+	image_info.depth = 1;
+	image_info.samples = VK_SAMPLE_COUNT_1_BIT;
+	image_info.initial_layout = VK_IMAGE_LAYOUT_UNDEFINED;
+	lod_map = device.create_image(image_info, nullptr);
 }
 
-void Ground::build_lod(Device &device, unsigned size, unsigned stride)
+void Ground::build_lod(Device &device, unsigned lod_size, unsigned stride)
 {
-	unsigned size_1 = size + 1;
+	unsigned size_1 = lod_size + 1;
 	vector<GroundVertex> vertices;
 	vertices.reserve(size_1 * size_1);
 	vector<uint16_t> indices;
-	indices.reserve(size * (2 * size_1 + 1));
+	indices.reserve(lod_size * (2 * size_1 + 1));
 
 	unsigned half_size = info.base_patch_size >> 1;
 
@@ -236,11 +242,11 @@ void Ground::build_lod(Device &device, unsigned size, unsigned stride)
 		}
 	}
 
-	unsigned slices = size;
+	unsigned slices = lod_size;
 	for (unsigned slice = 0; slice < slices; slice++)
 	{
 		unsigned base = slice * size_1;
-		for (unsigned x = 0; x <= size; x++)
+		for (unsigned x = 0; x <= lod_size; x++)
 		{
 			indices.push_back(base + x);
 			indices.push_back(base + size_1 + x);
@@ -248,17 +254,17 @@ void Ground::build_lod(Device &device, unsigned size, unsigned stride)
 		indices.push_back(0xffffu);
 	}
 
-	BufferCreateInfo info = {};
-	info.size = vertices.size() * sizeof(GroundVertex);
-	info.domain = BufferDomain::Device;
-	info.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+	BufferCreateInfo buffer_info = {};
+	buffer_info.size = vertices.size() * sizeof(GroundVertex);
+	buffer_info.domain = BufferDomain::Device;
+	buffer_info.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
 
 	LOD lod;
-	lod.vbo = device.create_buffer(info, vertices.data());
+	lod.vbo = device.create_buffer(buffer_info, vertices.data());
 
-	info.usage = VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
-	info.size = indices.size() * sizeof(uint16_t);
-	lod.ibo = device.create_buffer(info, indices.data());
+	buffer_info.usage = VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
+	buffer_info.size = indices.size() * sizeof(uint16_t);
+	lod.ibo = device.create_buffer(buffer_info, indices.data());
 	lod.count = indices.size();
 
 	quad_lod.push_back(lod);
@@ -266,12 +272,12 @@ void Ground::build_lod(Device &device, unsigned size, unsigned stride)
 
 void Ground::build_buffers(Device &device)
 {
-	unsigned size = info.base_patch_size;
+	unsigned base_size = info.base_patch_size;
 	unsigned stride = 1;
-	while (size >= 2)
+	while (base_size >= 2)
 	{
-		build_lod(device, size, stride);
-		size >>= 1;
+		build_lod(device, base_size, stride);
+		base_size >>= 1;
 		stride <<= 1;
 	}
 }
@@ -288,7 +294,7 @@ void Ground::on_device_destroyed(const DeviceCreatedEvent &)
 	lod_map.reset();
 }
 
-void Ground::get_render_info(const RenderContext &context, const CachedSpatialTransformComponent *transform,
+void Ground::get_render_info(const RenderContext &context, const RenderInfoComponent *transform,
                              RenderQueue &queue, const GroundPatch &ground_patch) const
 {
 	PatchInfo patch;
@@ -297,7 +303,10 @@ void Ground::get_render_info(const RenderContext &context, const CachedSpatialTr
 	// The normalmaps are generated with the reference that neighbor pixels are certain length apart.
 	// However, the base mesh [0, normal_size) is squashed to [0, 1] size in X/Z direction.
 	// We compensate for this scaling by doing the inverse transposed normal matrix properly here.
-	patch.push[1] = transform->transform->normal_transform * scale(vec3(info.normal_size, 1.0f, info.normal_size));
+	//patch.push[1] = transform->transform->normal_transform * scale(vec3(info.normal_size, 1.0f, info.normal_size));
+	mat4 normal_transform;
+	compute_normal_transform(normal_transform, transform->transform->world_transform);
+	patch.push[1] = normal_transform * scale(vec3(info.normal_size, 1.0f, info.normal_size));
 
 	// Find something concrete to put here.
 	patch.tangent_scale = vec2(1.0f / 10.0f);
@@ -337,6 +346,7 @@ void Ground::get_render_info(const RenderContext &context, const CachedSpatialTr
 	hasher.string("ground");
 	auto pipe_hash = hasher.get();
 	hasher.s32(base_lod);
+	hasher.s32(info.bandlimited_pixel);
 	auto sorting_key = RenderInfo::get_sort_key(context, Queue::Opaque, pipe_hash, hasher.get(),
 	                                            transform->world_aabb.get_center(),
 	                                            StaticLayer::Last);
@@ -361,9 +371,14 @@ void Ground::get_render_info(const RenderContext &context, const CachedSpatialTr
 
 	if (patch_data)
 	{
+		uint32_t flags = 0;
+		if (info.bandlimited_pixel)
+			flags |= 1u << 0;
+
 		patch.program = queue.get_shader_suites()[ecast(RenderableType::Ground)].get_program(DrawPipeline::Opaque,
 		                                                                                     MESH_ATTRIBUTE_POSITION_BIT,
-		                                                                                     MATERIAL_TEXTURE_BASE_COLOR_BIT);
+		                                                                                     MATERIAL_TEXTURE_BASE_COLOR_BIT,
+		                                                                                     flags);
 
 		*patch_data = patch;
 	}
@@ -408,7 +423,7 @@ Ground::Handles Ground::add_to_scene(Scene &scene, unsigned size, float tiling_f
 	auto *update_component = handles.entity->allocate_component<PerFrameUpdateComponent>();
 	update_component->refresh = ground.get();
 
-	auto *cached_transform = handles.entity->allocate_component<CachedSpatialTransformComponent>();
+	auto *cached_transform = handles.entity->allocate_component<RenderInfoComponent>();
 	cached_transform->transform = &handles.node->cached_transform;
 	cached_transform->skin_transform = nullptr;
 

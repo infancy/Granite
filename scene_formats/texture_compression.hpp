@@ -1,4 +1,4 @@
-/* Copyright (c) 2017-2018 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2019 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -44,6 +44,7 @@ struct CompressorArguments
 	VkFormat format = VK_FORMAT_UNDEFINED;
 	unsigned quality = 3;
 	TextureMode mode = TextureMode::Unknown;
+	bool deferred_mipgen = false;
 };
 
 VkFormat string_to_format(const std::string &s);

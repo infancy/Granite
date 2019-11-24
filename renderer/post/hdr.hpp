@@ -1,4 +1,4 @@
-/* Copyright (c) 2017-2018 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2019 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -32,8 +32,15 @@ struct HDRDynamicExposureInterface
 	virtual float get_exposure() const = 0;
 };
 
+struct HDROptions
+{
+	bool dynamic_exposure = true;
+};
+
 void setup_hdr_postprocess(RenderGraph &graph, const std::string &input, const std::string &output,
+                           const HDROptions &options,
                            const HDRDynamicExposureInterface *iface = nullptr);
 void setup_hdr_postprocess_compute(RenderGraph &graph, const std::string &input, const std::string &output,
+                                   const HDROptions &options,
                                    const HDRDynamicExposureInterface *iface = nullptr);
 }

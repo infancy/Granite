@@ -31,6 +31,7 @@ import android.view.Display;
 import android.view.View;
 import android.view.Window;
 import android.view.WindowManager;
+import android.graphics.Point;
 
 public class GraniteActivity extends android.app.NativeActivity
 {
@@ -64,6 +65,7 @@ public class GraniteActivity extends android.app.NativeActivity
     {
         super.onCreate(savedState);
         setImmersiveMode();
+        setVolumeControlStream(AudioManager.STREAM_MUSIC);
     }
 
     @Override
@@ -120,5 +122,10 @@ public class GraniteActivity extends android.app.NativeActivity
         if (extra == null)
             return "";
         return extra;
+    }
+
+    public int getCurrentOrientation()
+    {
+        return getResources().getConfiguration().orientation;
     }
 }

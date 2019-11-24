@@ -1,4 +1,4 @@
-/* Copyright (C) 2015-2018 Hans-Kristian Arntzen <maister@archlinux.us>
+/* Copyright (C) 2015-2019 Hans-Kristian Arntzen <maister@archlinux.us>
  *
  * Permission is hereby granted, free of charge,
  * to any person obtaining a copy of this software and associated documentation files (the "Software"),
@@ -18,6 +18,7 @@
 
 #include "glfft_cli.hpp"
 #include "glfft.hpp"
+#include "cli_parser.hpp"
 #include <cmath>
 #include <cstdlib>
 #include <functional>
@@ -28,115 +29,8 @@
 
 using namespace GLFFT;
 using namespace GLFFT::Internal;
+using namespace Util;
 using namespace std;
-
-struct CLIParser;
-struct CLICallbacks
-{
-	void add(const char *cli, const function<void(CLIParser &)> &func)
-	{
-		callbacks[cli] = func;
-	}
-	unordered_map<string, function<void(CLIParser &)>> callbacks;
-	function<void()> error_handler;
-};
-
-struct CLIParser
-{
-	CLIParser(CLICallbacks cbs, int argc, char *argv[])
-	    : cbs(move(cbs))
-	    , argc(argc)
-	    , argv(argv)
-	{
-	}
-
-	bool parse()
-	{
-		try
-		{
-			while (argc && !ended_state)
-			{
-				const char *next = *argv++;
-				argc--;
-
-				auto itr = cbs.callbacks.find(next);
-				if (itr == ::end(cbs.callbacks))
-				{
-					throw logic_error("Invalid argument.\n");
-				}
-
-				itr->second(*this);
-			}
-
-			return true;
-		}
-		catch (...)
-		{
-			if (cbs.error_handler)
-			{
-				cbs.error_handler();
-			}
-			return false;
-		}
-	}
-
-	void end()
-	{
-		ended_state = true;
-	}
-
-	unsigned next_uint()
-	{
-		if (!argc)
-		{
-			throw logic_error("Tried to parse uint, but nothing left in arguments.\n");
-		}
-
-		unsigned val = stoul(*argv);
-		if (val > numeric_limits<unsigned>::max())
-		{
-			throw out_of_range("next_uint() out of range.\n");
-		}
-
-		argc--;
-		argv++;
-
-		return val;
-	}
-
-	double next_double()
-	{
-		if (!argc)
-		{
-			throw logic_error("Tried to parse double, but nothing left in arguments.\n");
-		}
-
-		double val = stod(*argv);
-
-		argc--;
-		argv++;
-
-		return val;
-	}
-
-	const char *next_string()
-	{
-		if (!argc)
-		{
-			throw logic_error("Tried to parse string, but nothing left in arguments.\n");
-		}
-
-		const char *ret = *argv;
-		argc--;
-		argv++;
-		return ret;
-	}
-
-	CLICallbacks cbs;
-	int argc;
-	char **argv;
-	bool ended_state = false;
-};
 
 struct BenchArguments
 {
@@ -288,6 +182,8 @@ static void run_benchmark(Context *context, const BenchArguments &args)
 	wisdom.learn_optimal_options_exhaustive(context, args.width, args.height, args.type, input_target, output_target,
 	                                        options.type);
 
+	context->wait_idle();
+
 	FFT fft(context, args.width, args.height, args.type, args.type == ComplexToReal ? Inverse : Forward, input_target,
 	        output_target, cache, options, wisdom);
 
@@ -299,7 +195,7 @@ static void run_benchmark(Context *context, const BenchArguments &args)
 	context->log("  %s -> %s\n", input_target == SSBO ? "SSBO" : "Texture", output_target == SSBO ? "SSBO" : "Image");
 	context->log("  Size: %u x %u %s %s\n", args.width, args.height, args.string_for_type, args.fp16 ? "FP16" : "FP32");
 
-	double dispatch_time = fft.bench(context, output.get(), input.get(), 5, 100, 100, 5.0);
+	double dispatch_time = fft.bench(context, output.get(), input.get(), args.warmup, args.iterations, args.dispatches, args.timeout);
 	context->log("  %8.3f ms\n", 1000.0 * dispatch_time);
 	context->log("  %8.3f GFlop/s (estimated)\n", estimated_gflops / dispatch_time);
 	context->log("  %8.3f GB/s global memory bandwidth (estimated)\n", estimated_bandwidth_gb / dispatch_time);
@@ -315,7 +211,7 @@ static void cli_test_help(Context *context)
 {
 	context->log(
 	    "Usage: test [--test testid] [--test-all] [--test-range testidmin testidmax] [--exit-on-fail] "
-	    "[--minimum-snr-fp16 value-db] [--maximum-snr-fp32 value-db] [--epsilon-fp16 value] [--epsilon-fp32 value]\n"
+	    "[--minimum-snr-fp16 value-db] [--minimum-snr-fp32 value-db] [--epsilon-fp16 value] [--epsilon-fp32 value]\n"
 	    "       --test testid: Run a specific test, indexed by number.\n"
 	    "       --test-all: Run all tests.\n"
 	    "       --test-range testidmin testidmax: Run specific tests between testidmin and testidmax, indexed by "
@@ -361,7 +257,7 @@ static int cli_test(Context *context, int argc, char *argv[])
 	{
 		return EXIT_FAILURE;
 	}
-	else if (parser.ended_state)
+	else if (parser.is_ended_state())
 	{
 		return EXIT_SUCCESS;
 	}
@@ -442,7 +338,7 @@ static int cli_bench(Context *context, int argc, char *argv[])
 	{
 		return EXIT_FAILURE;
 	}
-	else if (parser.ended_state)
+	else if (parser.is_ended_state())
 	{
 		return EXIT_SUCCESS;
 	}

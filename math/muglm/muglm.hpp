@@ -1,4 +1,4 @@
-/* Copyright (c) 2017-2018 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2019 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -52,10 +52,10 @@ struct tvec2
 		y = T(u.y);
 	}
 
-	inline tvec2(T x, T y)
+	inline tvec2(T x_, T y_)
 	{
-		this->x = x;
-		this->y = y;
+		x = x_;
+		y = y_;
 	}
 
 	union
@@ -144,11 +144,11 @@ struct tvec3
 		z = v;
 	}
 
-	inline tvec3(T x, T y, T z)
+	inline tvec3(T x_, T y_, T z_)
 	{
-		this->x = x;
-		this->y = y;
-		this->z = z;
+		x = x_;
+		y = y_;
+		z = z_;
 	}
 
 	union
@@ -362,12 +362,12 @@ struct tvec4
 		w = v;
 	}
 
-	inline tvec4(T x, T y, T z, T w)
+	inline tvec4(T x_, T y_, T z_, T w_)
 	{
-		this->x = x;
-		this->y = y;
-		this->z = z;
-		this->w = w;
+		x = x_;
+		y = y_;
+		z = z_;
+		w = w_;
 	}
 
 	inline T &operator[](int index)
@@ -851,6 +851,13 @@ using mat2 = tmat2<float>;
 using mat3 = tmat3<float>;
 using mat4 = tmat4<float>;
 
+using dvec2 = tvec2<double>;
+using dvec3 = tvec3<double>;
+using dvec4 = tvec4<double>;
+using dmat2 = tmat2<double>;
+using dmat3 = tmat3<double>;
+using dmat4 = tmat4<double>;
+
 using ivec2 = tvec2<int32_t>;
 using ivec3 = tvec3<int32_t>;
 using ivec4 = tvec4<int32_t>;
@@ -880,16 +887,16 @@ struct quat : private vec4
 {
 	quat() = default;
 	quat(const quat &) = default;
-	quat(float w, float x, float y, float z)
-		: vec4(x, y, z, w)
+	quat(float w_, float x_, float y_, float z_)
+		: vec4(x_, y_, z_, w_)
 	{}
 
 	explicit inline quat(const vec4 &v)
 		: vec4(v)
 	{}
 
-	inline quat(float w, const vec3 &v)
-		: vec4(v, w)
+	inline quat(float w_, const vec3 &v_)
+		: vec4(v_, w_)
 	{}
 
 	inline const vec4 &as_vec4() const

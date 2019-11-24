@@ -1,4 +1,4 @@
-/* Copyright (c) 2017-2018 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2019 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -22,6 +22,7 @@
 
 #include "memory_mapped_texture.hpp"
 #include <string.h>
+#include <stdlib.h>
 
 using namespace std;
 
@@ -54,6 +55,14 @@ void MemoryMappedTexture::set_generate_mipmaps_on_load(bool enable)
 	mipgen_on_load = enable;
 }
 
+void MemoryMappedTexture::set_flags(MemoryMappedTextureFlags flags)
+{
+	bool new_cube = (flags & MEMORY_MAPPED_TEXTURE_CUBE_MAP_COMPATIBLE_BIT) != 0;
+	if (new_cube != cube)
+		abort();
+	set_generate_mipmaps_on_load((flags & MEMORY_MAPPED_TEXTURE_GENERATE_MIPMAP_ON_LOAD_BIT) != 0);
+}
+
 MemoryMappedTextureFlags MemoryMappedTexture::get_flags() const
 {
 	MemoryMappedTextureFlags flags = 0;
@@ -61,6 +70,11 @@ MemoryMappedTextureFlags MemoryMappedTexture::get_flags() const
 		flags |= MEMORY_MAPPED_TEXTURE_CUBE_MAP_COMPATIBLE_BIT;
 	if (mipgen_on_load)
 		flags |= MEMORY_MAPPED_TEXTURE_GENERATE_MIPMAP_ON_LOAD_BIT;
+
+	flags |= swizzle.r << MEMORY_MAPPED_TEXTURE_SWIZZLE_R_SHIFT;
+	flags |= swizzle.g << MEMORY_MAPPED_TEXTURE_SWIZZLE_G_SHIFT;
+	flags |= swizzle.b << MEMORY_MAPPED_TEXTURE_SWIZZLE_B_SHIFT;
+	flags |= swizzle.a << MEMORY_MAPPED_TEXTURE_SWIZZLE_A_SHIFT;
 	return flags;
 }
 
@@ -116,7 +130,7 @@ bool MemoryMappedTexture::map_write(unique_ptr<Granite::File> new_file, void *ma
 	header.width = layout.get_width();
 	header.height = layout.get_height();
 	header.depth = layout.get_depth();
-	header.flags = cube ? MEMORY_MAPPED_TEXTURE_CUBE_MAP_COMPATIBLE_BIT : 0;
+	header.flags = get_flags();
 	header.layers = layout.get_layers();
 	header.levels = layout.get_levels();
 	header.payload_size = layout.get_required_size();
@@ -210,6 +224,57 @@ size_t MemoryMappedTexture::get_required_size() const
 	return layout.get_required_size() + sizeof(MemoryMappedHeader);
 }
 
+void MemoryMappedTexture::set_swizzle(const VkComponentMapping &swizzle_)
+{
+	swizzle = swizzle_;
+}
+
+static void remap(VkComponentSwizzle &output, VkComponentSwizzle input,
+                  const VkComponentMapping &mapping, VkComponentSwizzle identity)
+{
+	if (input == VK_COMPONENT_SWIZZLE_IDENTITY)
+		input = identity;
+
+	switch (input)
+	{
+	case VK_COMPONENT_SWIZZLE_R:
+		output = mapping.r;
+		break;
+
+	case VK_COMPONENT_SWIZZLE_G:
+		output = mapping.g;
+		break;
+
+	case VK_COMPONENT_SWIZZLE_B:
+		output = mapping.b;
+		break;
+
+	case VK_COMPONENT_SWIZZLE_A:
+		output = mapping.a;
+		break;
+
+	case VK_COMPONENT_SWIZZLE_ONE:
+	case VK_COMPONENT_SWIZZLE_ZERO:
+		output = input;
+		break;
+
+	default:
+		output = VK_COMPONENT_SWIZZLE_IDENTITY;
+		break;
+	}
+}
+
+void MemoryMappedTexture::remap_swizzle(VkComponentMapping &mapping) const
+{
+	VkComponentMapping new_mapping;
+
+	remap(new_mapping.r, swizzle.r, mapping, VK_COMPONENT_SWIZZLE_R);
+	remap(new_mapping.g, swizzle.g, mapping, VK_COMPONENT_SWIZZLE_G);
+	remap(new_mapping.b, swizzle.b, mapping, VK_COMPONENT_SWIZZLE_B);
+	remap(new_mapping.a, swizzle.a, mapping, VK_COMPONENT_SWIZZLE_A);
+	mapping = new_mapping;
+}
+
 bool MemoryMappedTexture::map_copy(const void *mapped_, size_t size)
 {
 	auto new_file = make_unique<ScratchFile>(mapped_, size);
@@ -246,6 +311,10 @@ bool MemoryMappedTexture::map_read(unique_ptr<Granite::File> new_file, void *map
 
 	cube = (header->flags & MEMORY_MAPPED_TEXTURE_CUBE_MAP_COMPATIBLE_BIT) != 0;
 	mipgen_on_load = (header->flags & MEMORY_MAPPED_TEXTURE_GENERATE_MIPMAP_ON_LOAD_BIT) != 0;
+	swizzle.r = static_cast<VkComponentSwizzle>((header->flags >> MEMORY_MAPPED_TEXTURE_SWIZZLE_R_SHIFT) & MEMORY_MAPPED_TEXTURE_SWIZZLE_MASK);
+	swizzle.g = static_cast<VkComponentSwizzle>((header->flags >> MEMORY_MAPPED_TEXTURE_SWIZZLE_G_SHIFT) & MEMORY_MAPPED_TEXTURE_SWIZZLE_MASK);
+	swizzle.b = static_cast<VkComponentSwizzle>((header->flags >> MEMORY_MAPPED_TEXTURE_SWIZZLE_B_SHIFT) & MEMORY_MAPPED_TEXTURE_SWIZZLE_MASK);
+	swizzle.a = static_cast<VkComponentSwizzle>((header->flags >> MEMORY_MAPPED_TEXTURE_SWIZZLE_A_SHIFT) & MEMORY_MAPPED_TEXTURE_SWIZZLE_MASK);
 
 	if ((layout.get_required_size() + sizeof(MemoryMappedHeader)) < file->get_size())
 		return false;
@@ -265,11 +334,11 @@ bool MemoryMappedTexture::map_read(const std::string &path)
 	if (loaded_file->get_size() < sizeof(MemoryMappedHeader))
 		return false;
 
-	uint8_t *mapped = static_cast<uint8_t *>(loaded_file->map());
-	if (!mapped)
+	uint8_t *new_mapped = static_cast<uint8_t *>(loaded_file->map());
+	if (!new_mapped)
 		return false;
 
-	return map_read(move(loaded_file), mapped);
+	return map_read(move(loaded_file), new_mapped);
 }
 
 bool MemoryMappedTexture::is_header(const void *mapped_, size_t size)

@@ -1,4 +1,4 @@
-/* Copyright (c) 2017-2018 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2019 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -36,8 +36,8 @@ using namespace std;
 namespace Granite
 {
 
-Renderer::Renderer(RendererType type, const ShaderSuiteResolver *resolver)
-	: type(type), resolver(resolver)
+Renderer::Renderer(RendererType type_, const ShaderSuiteResolver *resolver_)
+	: type(type_), resolver(resolver_)
 {
 	EVENT_MANAGER_REGISTER_LATCH(Renderer, on_device_created, on_device_destroyed, DeviceCreatedEvent);
 
@@ -73,7 +73,11 @@ void Renderer::set_mesh_renderer_options_internal(RendererOptionFlags flags)
 
 	if (device)
 	{
-		// Used for early-kill alpha testing.
+		// Safe early-discard.
+		if (device->get_device_features().demote_to_helper_invocation_features.shaderDemoteToHelperInvocation)
+			global_defines.emplace_back("DEMOTE", 1);
+
+		// Used for early-kill alpha testing if demote_to_helper isn't available.
 		auto &subgroup = device->get_device_features().subgroup_properties;
 		if ((subgroup.supportedStages & VK_SHADER_STAGE_FRAGMENT_BIT) != 0 &&
 		    !ImplementationQuirks::get().force_no_subgroups &&
@@ -129,13 +133,13 @@ void Renderer::set_mesh_renderer_options_internal(RendererOptionFlags flags)
 		&suite[ecast(RenderableType::SkyCylinder)],
 	};
 
-	for (auto *suite : suites)
+	for (auto *shader_suite : suites)
 	{
-		suite->get_base_defines().clear();
+		shader_suite->get_base_defines().clear();
 		if (flags & VOLUMETRIC_FOG_ENABLE_BIT)
-			suite->get_base_defines().emplace_back("VOLUMETRIC_FOG", 1);
-		suite->get_base_defines().emplace_back(renderer_to_define(type), 1);
-		suite->bake_base_defines();
+			shader_suite->get_base_defines().emplace_back("VOLUMETRIC_FOG", 1);
+		shader_suite->get_base_defines().emplace_back(renderer_to_define(type), 1);
+		shader_suite->bake_base_defines();
 	}
 
 	renderer_options = flags;
@@ -186,6 +190,9 @@ vector<pair<string, int>> Renderer::build_defines_from_renderer_options(Renderer
 	else if (flags & SHADOW_PCF_KERNEL_WIDTH_3_BIT)
 		global_defines.emplace_back("SHADOW_MAP_PCF_KERNEL_WIDTH", 3);
 
+	if (flags & ALPHA_TEST_DISABLE_BIT)
+		global_defines.emplace_back("ALPHA_TEST_DISABLE", 1);
+
 	global_defines.emplace_back(renderer_to_define(type), 1);
 
 	return global_defines;
@@ -232,20 +239,18 @@ void Renderer::set_mesh_renderer_options_from_lighting(const LightingParameters 
 	set_mesh_renderer_options(flags);
 }
 
-void Renderer::setup_shader_suite(Device &device, RendererType type)
+void Renderer::setup_shader_suite(Device &device_, RendererType renderer_type)
 {
 	ShaderSuiteResolver default_resolver;
 	auto *res = resolver ? resolver : &default_resolver;
 	for (int i = 0; i < ecast(RenderableType::Count); i++)
-		res->init_shader_suite(device, suite[i], type, static_cast<RenderableType>(i));
+		res->init_shader_suite(device_, suite[i], renderer_type, static_cast<RenderableType>(i));
 }
 
 void Renderer::on_device_created(const DeviceCreatedEvent &created)
 {
-	auto &device = created.get_device();
-	this->device = &device;
-
-	setup_shader_suite(device, type);
+	device = &created.get_device();
+	setup_shader_suite(*device, type);
 	set_mesh_renderer_options_internal(renderer_options);
 	for (auto &s : suite)
 		s.bake_base_defines();
@@ -391,10 +396,10 @@ void Renderer::flush(Vulkan::CommandBuffer &cmd, RenderContext &context, Rendere
 	if (options & FRONT_FACE_CLOCKWISE_BIT)
 		cmd.set_front_face(VK_FRONT_FACE_CLOCKWISE);
 
-	if (options & NO_COLOR)
+	if (options & NO_COLOR_BIT)
 		cmd.set_color_write_mask(0);
 
-	if (options & DEPTH_STENCIL_READ_ONLY)
+	if (options & DEPTH_STENCIL_READ_ONLY_BIT)
 		cmd.set_depth_test(true, false);
 
 	if (options & DEPTH_BIAS_BIT)
@@ -409,7 +414,9 @@ void Renderer::flush(Vulkan::CommandBuffer &cmd, RenderContext &context, Rendere
 		cmd.set_depth_compare(VK_COMPARE_OP_GREATER);
 	}
 
-	if (options & DEPTH_TEST_INVERT_BIT)
+	if (options & DEPTH_TEST_EQUAL_BIT)
+		cmd.set_depth_compare(VK_COMPARE_OP_EQUAL);
+	else if (options & DEPTH_TEST_INVERT_BIT)
 		cmd.set_depth_compare(VK_COMPARE_OP_GREATER);
 
 	if (options & STENCIL_WRITE_REFERENCE_BIT)
@@ -586,7 +593,7 @@ void DeferredLightRenderer::render_light(Vulkan::CommandBuffer &cmd, RenderConte
 		defines.emplace_back("AMBIENT_OCCLUSION", 1);
 
 	unsigned variant = program->register_variant(defines);
-	cmd.set_program(*program->get_program(variant));
+	cmd.set_program(program->get_program(variant));
 	cmd.set_depth_test(true, false);
 	cmd.set_depth_compare(VK_COMPARE_OP_GREATER);
 

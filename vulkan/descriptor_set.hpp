@@ -1,4 +1,4 @@
-/* Copyright (c) 2017-2018 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2019 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -25,8 +25,9 @@
 #include "hash.hpp"
 #include "object_pool.hpp"
 #include "temporary_hashmap.hpp"
-#include "vulkan.hpp"
+#include "vulkan_headers.hpp"
 #include "sampler.hpp"
+#include "limits.hpp"
 #include <utility>
 #include <vector>
 #include "cookie.hpp"
@@ -47,6 +48,8 @@ struct DescriptorSetLayout
 	uint32_t fp_mask = 0;
 	uint32_t immutable_sampler_mask = 0;
 	uint64_t immutable_samplers = 0;
+	uint8_t array_size[VULKAN_NUM_BINDINGS] = {};
+	enum { UNSIZED_ARRAY = 0xff };
 };
 
 // Avoid -Wclass-memaccess warnings since we hash DescriptorSetLayout.
@@ -71,6 +74,48 @@ static inline void set_immutable_sampler(DescriptorSetLayout &layout, unsigned b
 static const unsigned VULKAN_NUM_SETS_PER_POOL = 16;
 static const unsigned VULKAN_DESCRIPTOR_RING_SIZE = 8;
 
+class DescriptorSetAllocator;
+class BindlessDescriptorPool;
+class ImageView;
+
+struct BindlessDescriptorPoolDeleter
+{
+	void operator()(BindlessDescriptorPool *pool);
+};
+
+class BindlessDescriptorPool : public Util::IntrusivePtrEnabled<BindlessDescriptorPool, BindlessDescriptorPoolDeleter, HandleCounter>,
+                               public InternalSyncEnabled
+{
+public:
+	friend struct BindlessDescriptorPoolDeleter;
+	explicit BindlessDescriptorPool(Device *device, DescriptorSetAllocator *allocator, VkDescriptorPool pool);
+	~BindlessDescriptorPool();
+	void operator=(const BindlessDescriptorPool &) = delete;
+	BindlessDescriptorPool(const BindlessDescriptorPool &) = delete;
+
+	bool allocate_descriptors(unsigned count);
+	VkDescriptorSet get_descriptor_set() const;
+
+	void set_texture(unsigned binding, const ImageView &view);
+	void set_texture_unorm(unsigned binding, const ImageView &view);
+	void set_texture_srgb(unsigned binding, const ImageView &view);
+
+private:
+	Device *device;
+	DescriptorSetAllocator *allocator;
+	VkDescriptorPool desc_pool;
+	VkDescriptorSet desc_set = VK_NULL_HANDLE;
+
+	void set_texture(unsigned binding, VkImageView view, VkImageLayout layout);
+};
+using BindlessDescriptorPoolHandle = Util::IntrusivePtr<BindlessDescriptorPool>;
+
+enum class BindlessResourceType
+{
+	ImageFP,
+	ImageInt
+};
+
 class DescriptorSetAllocator : public HashedObject<DescriptorSetAllocator>
 {
 public:
@@ -89,11 +134,19 @@ public:
 
 	void clear();
 
+	bool is_bindless() const
+	{
+		return bindless;
+	}
+
+	VkDescriptorPool allocate_bindless_pool(unsigned num_sets, unsigned num_descriptors);
+	VkDescriptorSet allocate_bindless_set(VkDescriptorPool pool, unsigned num_descriptors);
+
 private:
 	struct DescriptorSetNode : Util::TemporaryHashmapEnabled<DescriptorSetNode>, Util::IntrusiveListEnabled<DescriptorSetNode>
 	{
-		DescriptorSetNode(VkDescriptorSet set)
-		    : set(set)
+		explicit DescriptorSetNode(VkDescriptorSet set_)
+		    : set(set_)
 		{
 		}
 
@@ -101,6 +154,7 @@ private:
 	};
 
 	Device *device;
+	const VolkDeviceTable &table;
 	VkDescriptorSetLayout set_layout = VK_NULL_HANDLE;
 
 	struct PerThread
@@ -111,5 +165,6 @@ private:
 	};
 	std::vector<std::unique_ptr<PerThread>> per_thread;
 	std::vector<VkDescriptorPoolSize> pool_size;
+	bool bindless = false;
 };
 }

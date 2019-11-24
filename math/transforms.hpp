@@ -1,4 +1,4 @@
-/* Copyright (c) 2017-2018 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2019 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -56,7 +56,7 @@ void compute_cube_render_transform(vec3 center, unsigned face, mat4 &projection,
 struct LinearSampler
 {
 	std::vector<vec3> values;
-	vec3 sample(unsigned index, float l) const;
+	vec3 sample(unsigned index, float l, float dt) const;
 };
 
 struct CubicSampler
@@ -68,6 +68,6 @@ struct CubicSampler
 struct SlerpSampler
 {
 	std::vector<quat> values;
-	quat sample(unsigned index, float l) const;
+	quat sample(unsigned index, float l, float dt) const;
 };
 }

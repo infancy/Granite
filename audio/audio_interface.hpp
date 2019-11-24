@@ -1,4 +1,4 @@
-/* Copyright (c) 2017-2018 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2019 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -74,7 +74,7 @@ Backend *create_default_audio_backend(BackendCallback &callback, float target_sa
 class DumpBackend : public Backend
 {
 public:
-	DumpBackend(BackendCallback &callback, const std::string &path,
+	DumpBackend(BackendCallback &callback_, const std::string &path,
 	            float target_sample_rate, unsigned target_channels,
 	            unsigned frames_per_tick, unsigned frames);
 	~DumpBackend();

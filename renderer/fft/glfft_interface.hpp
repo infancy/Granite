@@ -1,4 +1,4 @@
-/* Copyright (C) 2015-2018 Hans-Kristian Arntzen <maister@archlinux.us>
+/* Copyright (C) 2015-2019 Hans-Kristian Arntzen <maister@archlinux.us>
  *
  * Permission is hereby granted, free of charge,
  * to any person obtaining a copy of this software and associated documentation files (the "Software"),
@@ -99,6 +99,7 @@ public:
 	virtual double get_time() = 0;
 
 	virtual unsigned get_max_work_group_threads() = 0;
+	virtual unsigned get_max_shared_memory_size() = 0;
 
 	virtual const void *map(Buffer *buffer, size_t offset, size_t size) = 0;
 	virtual void unmap(Buffer *buffer) = 0;
@@ -107,6 +108,8 @@ public:
 	virtual void read_texture(void *buffer, Texture *texture) = 0;
 
 	virtual std::string load_shader(const char *path) = 0;
+
+	virtual bool supports_native_fp16() = 0;
 
 protected:
 	Context() = default;

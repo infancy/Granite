@@ -1,4 +1,4 @@
-/* Copyright (c) 2017-2018 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2019 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -35,7 +35,7 @@ namespace RenderFunctions
 void line_strip_render(Vulkan::CommandBuffer &cmd, const RenderQueueData *infos, unsigned instances)
 {
 	auto &info = *static_cast<const LineStripInfo *>(infos[0].render_info);
-	cmd.set_program(*info.program);
+	cmd.set_program(info.program);
 
 	cmd.set_primitive_topology(VK_PRIMITIVE_TOPOLOGY_LINE_STRIP);
 	cmd.set_primitive_restart(true);
@@ -60,11 +60,11 @@ void line_strip_render(Vulkan::CommandBuffer &cmd, const RenderQueueData *infos,
 	unsigned index = 0;
 	for (unsigned i = 0; i < instances; i++)
 	{
-		auto &info = *static_cast<const LineInfo *>(infos[i].instance_data);
-		for (unsigned x = 0; x < info.count; x++)
+		auto &instance_info = *static_cast<const LineInfo *>(infos[i].instance_data);
+		for (unsigned x = 0; x < instance_info.count; x++)
 		{
-			*positions++ = info.positions[x];
-			*colors++ = info.colors[x];
+			*positions++ = instance_info.positions[x];
+			*colors++ = instance_info.colors[x];
 			*indices++ = index++;
 		}
 		*indices++ = 0xffffffffu;
@@ -76,7 +76,7 @@ void line_strip_render(Vulkan::CommandBuffer &cmd, const RenderQueueData *infos,
 void sprite_render(Vulkan::CommandBuffer &cmd, const RenderQueueData *infos, unsigned num_instances)
 {
 	auto &info = *static_cast<const SpriteRenderInfo *>(infos->render_info);
-	cmd.set_program(*info.program);
+	cmd.set_program(info.program);
 
 	if (info.textures[0])
 	{
@@ -90,7 +90,7 @@ void sprite_render(Vulkan::CommandBuffer &cmd, const RenderQueueData *infos, uns
 		push.resolution.y = info.textures[0]->get_image().get_height();
 		push.inv_resolution = 1.0f / push.resolution;
 
-		cmd.push_constants(&push, 0, sizeof(push));
+		*cmd.allocate_typed_constant_data<Push>(3, 0, 1) = push;
 
 		cmd.set_texture(2, 0, *info.textures[0], info.sampler);
 		if (info.textures[1])
@@ -118,9 +118,9 @@ void sprite_render(Vulkan::CommandBuffer &cmd, const RenderQueueData *infos, uns
 	quads = 0;
 	for (unsigned i = 0; i < num_instances; i++)
 	{
-		auto &info = *static_cast<const SpriteInstanceInfo *>(infos[i].instance_data);
-		memcpy(data + quads, info.quads, info.count * sizeof(*data));
-		quads += info.count;
+		auto &instance_info = *static_cast<const SpriteInstanceInfo *>(infos[i].instance_data);
+		memcpy(data + quads, instance_info.quads, instance_info.count * sizeof(*data));
+		quads += instance_info.count;
 	}
 
 	cmd.set_vertex_attrib(1, 1, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(QuadData, pos_off_x));
@@ -130,6 +130,7 @@ void sprite_render(Vulkan::CommandBuffer &cmd, const RenderQueueData *infos, uns
 	cmd.set_vertex_attrib(5, 1, VK_FORMAT_R32_SFLOAT, offsetof(QuadData, layer));
 	if (info.textures[1])
 		cmd.set_vertex_attrib(6, 1, VK_FORMAT_R32_SFLOAT, offsetof(QuadData, blend_factor));
+	cmd.set_vertex_attrib(7, 1, VK_FORMAT_R32_SFLOAT, offsetof(QuadData, array_layer));
 	cmd.draw(4, quads);
 }
 }
@@ -197,22 +198,22 @@ void Sprite::get_sprite_render_info(const SpriteTransformInfo &transform, Render
 	{
 		auto &suite = queue.get_shader_suites()[ecast(RenderableType::Sprite)];
 
-		uint32_t flags = 0;
+		uint32_t shader_flags = 0;
 		if (bandlimited_pixel)
-			flags |= 1 << 0;
+			shader_flags |= BANDLIMITED_PIXEL_BIT;
 		if (sprite.textures[1])
-			flags |= 1 << 1;
+			shader_flags |= BLEND_TEXUTRE_BIT;
 		if (luma_to_alpha)
-			flags |= 1 << 2;
+			shader_flags |= LUMA_TO_ALPHA_BIT;
 		if (clear_alpha_to_zero)
-			flags |= 1 << 3;
+			shader_flags |= CLEAR_ALPHA_TO_ZERO_BIT;
 
 		sprite.program = suite.get_program(pipeline,
 		                                   MESH_ATTRIBUTE_POSITION_BIT |
 		                                   MESH_ATTRIBUTE_VERTEX_COLOR_BIT |
 		                                   (texture ? MESH_ATTRIBUTE_UV_BIT : 0),
 		                                   texture ? MATERIAL_TEXTURE_BASE_COLOR_BIT : 0,
-		                                   flags);
+		                                   shader_flags);
 		*sprite_data = sprite;
 	}
 }

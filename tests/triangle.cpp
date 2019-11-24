@@ -1,4 +1,4 @@
-/* Copyright (c) 2017-2018 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2019 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -147,9 +147,7 @@ struct TriangleApplication : Granite::Application, Granite::EventHandler
 		cmd->set_specialization_constant(2, 0.8f);
 		cmd->set_specialization_constant(3, 1.0f);
 
-		auto *program = device.get_shader_manager().register_graphics("assets://shaders/triangle.vert", "assets://shaders/triangle.frag");
-		auto variant = program->register_variant({});
-		cmd->set_program(*program->get_program(variant));
+		cmd->set_program("assets://shaders/triangle.vert", "assets://shaders/triangle.frag");
 		cmd->set_primitive_topology(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP);
 
 		static const vec2 vertices[] = {

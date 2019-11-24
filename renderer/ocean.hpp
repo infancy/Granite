@@ -1,4 +1,4 @@
-/* Copyright (c) 2017-2018 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2019 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -70,7 +70,7 @@ public:
 
 	struct Handles
 	{
-		EntityHandle entity;
+		Entity *entity;
 		Ocean *ocean;
 	};
 
@@ -101,7 +101,7 @@ private:
 	}
 
 	void get_render_info(const RenderContext &context,
-	                     const CachedSpatialTransformComponent *transform,
+	                     const RenderInfoComponent *transform,
 	                     RenderQueue &queue) const override;
 
 	const RenderContext *context = nullptr;

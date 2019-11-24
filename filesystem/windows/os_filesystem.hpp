@@ -1,4 +1,4 @@
-/* Copyright (c) 2017-2018 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2019 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -31,7 +31,7 @@ namespace Granite
 class MappedFile : public File
 {
 public:
-	MappedFile(const std::string &path, FileMode mode);
+	static MappedFile *open(const std::string &path, FileMode mode);
 	~MappedFile();
 
 	virtual void *map() override;
@@ -41,6 +41,8 @@ public:
 	virtual bool reopen() override;
 
 private:
+	bool init(const std::string &path, FileMode mode);
+	MappedFile() = default;
 	HANDLE file = nullptr;
 	void *mapped = nullptr;
 	size_t size = 0;
@@ -62,5 +64,19 @@ public:
 
 private:
 	std::string base;
+
+	struct Handler
+	{
+		std::string path;
+		std::function<void (const FileNotifyInfo &)> func;
+		HANDLE handle = nullptr;
+		HANDLE event = nullptr;
+		DWORD async_buffer[1024];
+		OVERLAPPED overlapped;
+	};
+
+	std::unordered_map<FileNotifyHandle, Handler> handlers;
+	FileNotifyHandle handle_id = 0;
+	void kick_async(Handler &handler);
 };
 }

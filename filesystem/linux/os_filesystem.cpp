@@ -1,4 +1,4 @@
-/* Copyright (c) 2017-2018 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2019 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -31,9 +31,11 @@
 #include <unistd.h>
 #include <dirent.h>
 #include <string.h>
-#include <sys/inotify.h>
 #include <fcntl.h>
 #include <sys/mman.h>
+#ifdef __linux__
+#include <sys/inotify.h>
+#endif
 
 using namespace std;
 
@@ -62,7 +64,19 @@ static bool ensure_directory(const std::string &path)
 	return ensure_directory_inner(basedir);
 }
 
-MMapFile::MMapFile(const std::string &path, FileMode mode)
+MMapFile *MMapFile::open(const std::string &path, FileMode mode)
+{
+	auto *file = new MMapFile();
+	if (!file->init(path, mode))
+	{
+		delete file;
+		return nullptr;
+	}
+	else
+		return file;
+}
+
+bool MMapFile::init(const std::string &path, FileMode mode)
 {
 	int modeflags = 0;
 	switch (mode)
@@ -73,40 +87,46 @@ MMapFile::MMapFile(const std::string &path, FileMode mode)
 
 	case FileMode::WriteOnly:
 		if (!ensure_directory(path))
-			throw runtime_error("MMapFile failed to create directory");
+		{
+			LOGE("MMapFile failed to create directory.\n");
+			return false;
+		}
 		modeflags = O_RDWR | O_CREAT | O_TRUNC; // Need read access for mmap.
 		break;
 
 	case FileMode::ReadWrite:
 		if (!ensure_directory(path))
-			throw runtime_error("MMapFile failed to create directory");
+		{
+			LOGE("MMapFile failed to create directory.\n");
+			return false;
+		}
 		modeflags = O_RDWR | O_CREAT;
 		break;
 	}
-	fd = open(path.c_str(), modeflags, 0640);
+
+	fd = ::open(path.c_str(), modeflags, 0640);
 	if (fd < 0)
-	{
-		LOGE("open(), error: %s\n", strerror(errno));
-		throw runtime_error("MMapFile failed to open file");
-	}
+		return false;
 
 	if (!reopen())
 	{
 		close(fd);
-		throw runtime_error("fstat failed");
+		return false;
 	}
+
+	return true;
 }
 
-void *MMapFile::map_write(size_t size)
+void *MMapFile::map_write(size_t map_size)
 {
 	if (mapped)
 		return nullptr;
 
-	if (ftruncate(fd, size) < 0)
+	if (ftruncate(fd, map_size) < 0)
 		return nullptr;
-	this->size = size;
+	this->size = map_size;
 
-	mapped = mmap(nullptr, size, PROT_WRITE | PROT_READ, MAP_SHARED, fd, 0);
+	mapped = mmap(nullptr, map_size, PROT_WRITE | PROT_READ, MAP_SHARED, fd, 0);
 	if (mapped == MAP_FAILED)
 	{
 		LOGE("Failed to mmap: %s\n", strerror(errno));
@@ -160,39 +180,33 @@ MMapFile::~MMapFile()
 		close(fd);
 }
 
-OSFilesystem::OSFilesystem(const std::string &base)
-	: base(base)
+OSFilesystem::OSFilesystem(const std::string &base_)
+	: base(base_)
 {
+#ifdef __linux__
 	notify_fd = inotify_init1(IN_NONBLOCK);
 	if (notify_fd < 0)
-	{
 		LOGE("Failed to init inotify.\n");
-		throw runtime_error("inotify");
-	}
+#else
+	notify_fd = -1;
+#endif
 }
 
 OSFilesystem::~OSFilesystem()
 {
+#ifdef __linux__
 	if (notify_fd > 0)
 	{
 		for (auto &handler : handlers)
 			inotify_rm_watch(notify_fd, handler.first);
 		close(notify_fd);
 	}
+#endif
 }
 
 unique_ptr<File> OSFilesystem::open(const std::string &path, FileMode mode)
 {
-	try
-	{
-		unique_ptr<File> file(new MMapFile(Path::join(base, path), mode));
-		return file;
-	}
-	catch (const std::exception &e)
-	{
-		LOGE("OSFilesystem::open(): %s\n", e.what());
-		return {};
-	}
+	return unique_ptr<MMapFile>(MMapFile::open(Path::join(base, path), mode));
 }
 
 string OSFilesystem::get_filesystem_path(const string &path)
@@ -207,6 +221,10 @@ int OSFilesystem::get_notification_fd() const
 
 void OSFilesystem::poll_notifications()
 {
+#ifdef __linux__
+	if (notify_fd < 0)
+		return;
+
 	for (;;)
 	{
 		alignas(inotify_event) char buffer[sizeof(inotify_event) + NAME_MAX + 1];
@@ -215,7 +233,7 @@ void OSFilesystem::poll_notifications()
 		if (ret < 0)
 		{
 			if (errno != EAGAIN)
-				throw runtime_error("failed to read inotify fd");
+				LOGE("failed to read inotify fd.\n");
 			break;
 		}
 
@@ -255,29 +273,43 @@ void OSFilesystem::poll_notifications()
 			}
 		}
 	}
+#endif
 }
 
 void OSFilesystem::uninstall_notification(FileNotifyHandle handle)
 {
+#ifdef __linux__
 	if (handle < 0)
+		return;
+
+	if (notify_fd < 0)
 		return;
 
 	//LOGI("Uninstalling notification: %d\n", handle);
 
 	auto real = virtual_to_real.find(handle);
 	if (real == end(virtual_to_real))
-		throw runtime_error("unknown virtual inotify handler");
+	{
+		LOGE("unknown virtual inotify handler.\n");
+		return;
+	}
 
 	auto itr = handlers.find(static_cast<int>(real->second));
 	if (itr == end(handlers))
-		throw runtime_error("unknown inotify handler");
+	{
+		LOGE("unknown inotify handler.\n");
+		return;
+	}
 
 	auto handler_instance = find_if(begin(itr->second.funcs), end(itr->second.funcs), [=](const VirtualHandler &v) {
 		return v.virtual_handle == handle;
 	});
 
 	if (handler_instance == end(itr->second.funcs))
-		throw runtime_error("unknown inotify handler path");
+	{
+		LOGE("unknown inotify handler path.\n");
+		return;
+	}
 
 	itr->second.funcs.erase(handler_instance);
 
@@ -288,16 +320,25 @@ void OSFilesystem::uninstall_notification(FileNotifyHandle handle)
 	}
 
 	virtual_to_real.erase(real);
+#else
+	(void)handle;
+#endif
 }
 
 FileNotifyHandle OSFilesystem::install_notification(const string &path,
                                                     function<void (const FileNotifyInfo &)> func)
 {
+#ifdef __linux__
 	//LOGI("Installing notification for: %s\n", path.c_str());
+	if (notify_fd < 0)
+		return -1;
 
-	FileStat s;
+	FileStat s = {};
 	if (!stat(path, s))
-		throw runtime_error("path doesn't exist");
+	{
+		LOGE("inotify: path doesn't exist.\n");
+		return -1;
+	}
 
 	auto resolved_path = Path::join(base, path);
 	int wd = inotify_add_watch(notify_fd, resolved_path.c_str(),
@@ -320,6 +361,11 @@ FileNotifyHandle OSFilesystem::install_notification(const string &path,
 
 	virtual_to_real[virtual_handle] = wd;
 	return static_cast<FileNotifyHandle>(virtual_handle);
+#else
+	(void)path;
+	(void)func;
+	return -1;
+#endif
 }
 
 vector<ListEntry> OSFilesystem::list(const string &path)
@@ -380,7 +426,11 @@ bool OSFilesystem::stat(const std::string &path, FileStat &stat)
 		stat.type = PathType::Special;
 
 	stat.size = uint64_t(buf.st_size);
+#ifdef __linux__
 	stat.last_modified = buf.st_mtim.tv_sec * 1000000000ull + buf.st_mtim.tv_nsec;
+#else
+	stat.last_modified = buf.st_mtimespec.tv_sec * 1000000000ull + buf.st_mtimespec.tv_nsec;
+#endif
 	return true;
 }
 

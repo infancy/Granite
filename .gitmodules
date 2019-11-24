@@ -6,7 +6,7 @@
 	url = git://github.com/google/shaderc.git
 [submodule "third_party/glslang"]
 	path = third_party/glslang
-	url = git://github.com/google/glslang.git
+	url = git://github.com/KhronosGroup/glslang.git
 [submodule "third_party/spirv-tools"]
 	path = third_party/spirv-tools
 	url = git://github.com/KhronosGroup/SPIRV-Tools
@@ -27,7 +27,7 @@
 	url = http://bitbucket.org/Themaister/astc-encoder
 [submodule "third_party/fossilize"]
 	path = third_party/fossilize
-	url = git://github.com/Themaister/Fossilize
+	url = git://github.com/ValveSoftware/Fossilize
 [submodule "third_party/volk"]
 	path = third_party/volk
 	url = git://github.com/zeux/volk
@@ -37,3 +37,9 @@
 [submodule "third_party/muFFT"]
 	path = third_party/muFFT
 	url = git://github.com/Themaister/muFFT
+[submodule "third_party/oboe"]
+	path = third_party/oboe
+	url = git://github.com/google/oboe
+[submodule "third_party/khronos/vulkan-headers"]
+	path = third_party/khronos/vulkan-headers
+	url = git://github.com/KhronosGroup/Vulkan-Headers

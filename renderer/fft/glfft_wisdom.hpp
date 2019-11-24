@@ -1,4 +1,4 @@
-/* Copyright (C) 2015-2018 Hans-Kristian Arntzen <maister@archlinux.us>
+/* Copyright (C) 2015-2019 Hans-Kristian Arntzen <maister@archlinux.us>
  *
  * Permission is hereby granted, free of charge,
  * to any person obtaining a copy of this software and associated documentation files (the "Software"),
@@ -110,10 +110,11 @@ public:
 	                                                               Target input_target, Target output_target,
 	                                                               const FFTOptions &base_options) const;
 
-	void set_static_wisdom(FFTStaticWisdom static_wisdom)
+	void set_static_wisdom(FFTStaticWisdom static_wisdom_)
 	{
-		this->static_wisdom = static_wisdom;
+		static_wisdom = static_wisdom_;
 	}
+
 	static FFTStaticWisdom get_static_wisdom_from_renderer(Context *context);
 	static FFTOptions::Performance get_static_performance_options_from_renderer(Context *context);
 

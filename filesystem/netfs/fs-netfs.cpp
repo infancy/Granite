@@ -1,4 +1,4 @@
-/* Copyright (c) 2017-2018 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2019 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -27,15 +27,14 @@
 #include <assert.h>
 
 #define HOST_IP "localhost"
-
 using namespace std;
 
 namespace Granite
 {
 struct FSNotifyCommand : LooperHandler
 {
-	FSNotifyCommand(const string &protocol, unique_ptr<Socket> socket)
-		: LooperHandler(move(socket))
+	FSNotifyCommand(const string &protocol, unique_ptr<Socket> socket_)
+		: LooperHandler(move(socket_)), expected(false)
 	{
 		reply_queue.emplace();
 		auto &reply = reply_queue.back();
@@ -48,7 +47,6 @@ struct FSNotifyCommand : LooperHandler
 		command_reader.start(result_reply.get_buffer());
 
 		state = NotificationLoop;
-		expected = false;
 	}
 
 	void expected_destruction()
@@ -272,8 +270,8 @@ struct FSReadCommand : LooperHandler
 {
 	virtual ~FSReadCommand() = default;
 
-	FSReadCommand(const string &path, NetFSCommand command, unique_ptr<Socket> socket)
-		: LooperHandler(move(socket))
+	FSReadCommand(const string &path, NetFSCommand command, unique_ptr<Socket> socket_)
+		: LooperHandler(move(socket_))
 	{
 		reply_builder.begin();
 		reply_builder.add_u32(command);
@@ -362,8 +360,8 @@ struct FSReadCommand : LooperHandler
 
 struct FSReader : FSReadCommand
 {
-	FSReader(const string &path, unique_ptr<Socket> socket)
-		: FSReadCommand(path, NETFS_READ_FILE, move(socket))
+	FSReader(const string &path, unique_ptr<Socket> socket_)
+		: FSReadCommand(path, NETFS_READ_FILE, move(socket_))
 	{
 	}
 
@@ -391,8 +389,8 @@ struct FSReader : FSReadCommand
 
 struct FSList : FSReadCommand
 {
-	FSList(const string &path, unique_ptr<Socket> socket)
-		: FSReadCommand(path, NETFS_LIST, move(socket))
+	FSList(const string &path, unique_ptr<Socket> socket_)
+		: FSReadCommand(path, NETFS_LIST, move(socket_))
 	{
 	}
 
@@ -441,8 +439,8 @@ struct FSList : FSReadCommand
 
 struct FSStat : FSReadCommand
 {
-	FSStat(const string &path, unique_ptr<Socket> socket)
-		: FSReadCommand(path, NETFS_STAT, move(socket))
+	FSStat(const string &path, unique_ptr<Socket> socket_)
+		: FSReadCommand(path, NETFS_STAT, move(socket_))
 	{
 	}
 
@@ -491,8 +489,8 @@ struct FSStat : FSReadCommand
 
 struct FSWriteCommand : LooperHandler
 {
-	FSWriteCommand(const string &path, const vector<uint8_t> &buffer, unique_ptr<Socket> socket)
-		: LooperHandler(move(socket))
+	FSWriteCommand(const string &path, const vector<uint8_t> &buffer, unique_ptr<Socket> socket_)
+		: LooperHandler(move(socket_))
 	{
 		target_size = buffer.size();
 
@@ -729,17 +727,40 @@ NetworkFile::~NetworkFile()
 	unmap();
 }
 
-NetworkFile::NetworkFile(Looper &looper, const std::string &path, FileMode mode)
-	: path(path), mode(mode), looper(looper)
+NetworkFile *NetworkFile::open(Granite::Looper &looper, const std::string &path, Granite::FileMode mode)
 {
+	auto *file = new NetworkFile;
+	if (!file->init(looper, path, mode))
+	{
+		delete file;
+		return nullptr;
+	}
+	else
+		return file;
+}
+
+bool NetworkFile::init(Looper &looper_, const std::string &path_, FileMode mode_)
+{
+	path = path_;
+	mode = mode_;
+	looper = &looper_;
+
 	if (mode == FileMode::ReadWrite)
-		throw runtime_error("Unsupported file mode.");
+	{
+		LOGE("Unsupported file mode.\n");
+		return false;
+	}
 
 	if (mode == FileMode::ReadOnly)
 	{
 		if (!reopen())
-			throw runtime_error("Failed to connect to server.");
+		{
+			LOGE("Failed to connect to server.\n");
+			return false;
+		}
 	}
+
+	return true;
 }
 
 void NetworkFile::unmap()
@@ -753,8 +774,8 @@ void NetworkFile::unmap()
 
 		auto handler = unique_ptr<FSWriteCommand>(new FSWriteCommand(path, buffer, move(socket)));
 		auto reply = handler->result.get_future();
-		looper.run_in_looper([&handler, this]() {
-			looper.register_handler(EVENT_OUT | EVENT_IN, move(handler));
+		looper->run_in_looper([&handler, this]() {
+			looper->register_handler(EVENT_OUT | EVENT_IN, move(handler));
 		});
 
 		try
@@ -783,8 +804,8 @@ bool NetworkFile::reopen()
 		future = handler->result.get_future();
 
 		// Capture-by-move would be nice here.
-		looper.run_in_looper([handler, this]() {
-			looper.register_handler(EVENT_OUT, unique_ptr<FSReader>(handler));
+		looper->run_in_looper([handler, this]() {
+			looper->register_handler(EVENT_OUT, unique_ptr<FSReader>(handler));
 		});
 	}
 	return true;
@@ -834,16 +855,8 @@ size_t NetworkFile::get_size()
 
 unique_ptr<File> NetworkFilesystem::open(const std::string &path, FileMode mode)
 {
-	try
-	{
-		auto joined = protocol + "://" + path;
-		return unique_ptr<File>(new NetworkFile(looper, move(joined), mode));
-	}
-	catch (const std::exception &e)
-	{
-		LOGE("NetworkFilesystem::open(): %s\n", e.what());
-		return {};
-	}
+	auto joined = protocol + "://" + path;
+	return unique_ptr<File>(NetworkFile::open(looper, move(joined), mode));
 }
 
 bool NetworkFilesystem::stat(const std::string &path, FileStat &stat)

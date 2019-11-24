@@ -1,4 +1,4 @@
-/* Copyright (c) 2017-2018 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2019 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -48,7 +48,7 @@ enum PositionalLightVariantBits
 
 struct LightCookie
 {
-	LightCookie()
+	LightCookie() noexcept
 	{
 		count.store(0);
 	}
@@ -62,15 +62,15 @@ struct LightCookie
 };
 static LightCookie light_cookie;
 
-PositionalLight::PositionalLight(Type type)
-	: type(type)
+PositionalLight::PositionalLight(Type type_)
+	: type(type_)
 {
 	cookie = light_cookie.get_cookie();
 }
 
-void PositionalLight::set_color(vec3 color)
+void PositionalLight::set_color(vec3 color_)
 {
-	this->color = color;
+	color = color_;
 	recompute_range();
 }
 
@@ -89,10 +89,10 @@ void PositionalLight::recompute_range()
 	set_range(d);
 }
 
-void SpotLight::set_spot_parameters(float inner_cone, float outer_cone)
+void SpotLight::set_spot_parameters(float inner_cone_, float outer_cone_)
 {
-	this->inner_cone = clamp(inner_cone, 0.001f, 1.0f);
-	this->outer_cone = clamp(outer_cone, 0.001f, 1.0f);
+	inner_cone = clamp(inner_cone_, 0.001f, 1.0f);
+	outer_cone = clamp(outer_cone_, 0.001f, 1.0f);
 	recompute_range();
 }
 
@@ -123,11 +123,14 @@ PositionalFragmentInfo SpotLight::get_shader_info(const mat4 &transform) const
 	// This assumes a uniform scale.
 	float max_range = min(falloff_range, cutoff_range) * scale_factor;
 
+	float spot_scale = 1.0f / max(0.001f, inner_cone - outer_cone);
+	float spot_bias = -outer_cone * spot_scale;
+
 	return {
 		color * (scale_factor * scale_factor),
-		outer_cone,
+		spot_scale,
 		transform[3].xyz(),
-		inner_cone,
+		spot_bias,
 		-normalize(transform[2].xyz()),
 		1.0f / max_range,
 	};
@@ -175,7 +178,7 @@ struct PositionalShaderInfo
 static void positional_render_full_screen(CommandBuffer &cmd, const RenderQueueData *infos, unsigned num_instances)
 {
 	auto &light_info = *static_cast<const PositionalLightRenderInfo *>(infos[0].render_info);
-	cmd.set_program(*light_info.program);
+	cmd.set_program(light_info.program);
 	CommandBufferUtil::set_fullscreen_quad_vertex_state(cmd);
 	cmd.set_cull_mode(VK_CULL_MODE_NONE);
 
@@ -229,7 +232,7 @@ static void positional_render_full_screen(CommandBuffer &cmd, const RenderQueueD
 static void positional_render_depth(CommandBuffer &cmd, const RenderQueueData *infos, unsigned num_instances)
 {
 	auto &light_info = *static_cast<const PositionalLightRenderInfo *>(infos[0].render_info);
-	cmd.set_program(*light_info.program);
+	cmd.set_program(light_info.program);
 	cmd.set_vertex_binding(0, *light_info.vbo, 0, sizeof(vec3));
 	cmd.set_vertex_attrib(0, 0, VK_FORMAT_R32G32B32_SFLOAT, 0);
 	cmd.set_index_buffer(*light_info.ibo, 0, VK_INDEX_TYPE_UINT16);
@@ -262,7 +265,7 @@ static void positional_render_depth(CommandBuffer &cmd, const RenderQueueData *i
 static void positional_render_common(CommandBuffer &cmd, const RenderQueueData *infos, unsigned num_instances)
 {
 	auto &light_info = *static_cast<const PositionalLightRenderInfo *>(infos[0].render_info);
-	cmd.set_program(*light_info.program);
+	cmd.set_program(light_info.program);
 	cmd.set_vertex_binding(0, *light_info.vbo, 0, sizeof(vec3));
 	cmd.set_vertex_attrib(0, 0, VK_FORMAT_R32G32B32_SFLOAT, 0);
 	cmd.set_index_buffer(*light_info.ibo, 0, VK_INDEX_TYPE_UINT16);
@@ -338,7 +341,7 @@ static void positional_render_back(CommandBuffer &cmd, const RenderQueueData *in
 	positional_render_common(cmd, infos, num_instances);
 }
 
-void SpotLight::get_depth_render_info(const RenderContext &, const CachedSpatialTransformComponent *transform,
+void SpotLight::get_depth_render_info(const RenderContext &, const RenderInfoComponent *transform,
                                       RenderQueue &queue) const
 {
 	RenderFunc func = positional_render_depth;
@@ -398,7 +401,7 @@ vec2 SpotLight::get_z_range(const RenderContext &context, const mat4 &transform)
 	return range;
 }
 
-void SpotLight::get_render_info(const RenderContext &context, const CachedSpatialTransformComponent *transform,
+void SpotLight::get_render_info(const RenderContext &context, const RenderInfoComponent *transform,
                                 RenderQueue &queue) const
 {
 	auto &params = context.get_render_parameters();
@@ -512,7 +515,7 @@ void PointLight::set_shadow_info(const Vulkan::ImageView *shadow, const PointTra
 	shadow_transform = transform;
 }
 
-void PointLight::get_depth_render_info(const RenderContext &, const CachedSpatialTransformComponent *transform,
+void PointLight::get_depth_render_info(const RenderContext &, const RenderInfoComponent *transform,
                                        RenderQueue &queue) const
 {
 	RenderFunc func = positional_render_depth;
@@ -544,7 +547,7 @@ void PointLight::get_depth_render_info(const RenderContext &, const CachedSpatia
 	}
 }
 
-void PointLight::get_render_info(const RenderContext &context, const CachedSpatialTransformComponent *transform,
+void PointLight::get_render_info(const RenderContext &context, const RenderInfoComponent *transform,
                                  RenderQueue &queue) const
 {
 	auto &params = context.get_render_parameters();

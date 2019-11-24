@@ -1,4 +1,4 @@
-/* Copyright (c) 2017-2018 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2019 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -22,7 +22,7 @@
 
 #include "network.hpp"
 
-#ifndef _WIN32
+#ifdef __linux__
 #include <string>
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -36,17 +36,17 @@ using namespace std;
 
 namespace Granite
 {
-void SocketReader::start(void *data, size_t size)
+void SocketReader::start(void *data_, size_t size_)
 {
-	this->data = data;
-	this->size = size;
+	data = data_;
+	size = size_;
 	offset = 0;
 }
 
-void SocketWriter::start(const void *data, size_t size)
+void SocketWriter::start(const void *data_, size_t size_)
 {
-	this->data = data;
-	this->size = size;
+	data = data_;
+	size = size_;
 	offset = 0;
 }
 
@@ -72,14 +72,14 @@ int SocketWriter::process(Socket &socket)
 	return offset;
 }
 
-Socket::Socket(int fd, bool owned)
-	: fd(fd), owned(owned)
+Socket::Socket(int fd_, bool owned_)
+	: fd(fd_), owned(owned_)
 {
 }
 
 unique_ptr<Socket> Socket::connect(const char *addr, uint16_t port)
 {
-#ifndef _WIN32
+#ifdef __linux__
 	SocketGlobal::get();
 
 	int fd = -1;
@@ -134,7 +134,7 @@ Socket::~Socket()
 	if (looper)
 		looper->unregister_handler(*this);
 
-#ifndef _WIN32
+#ifdef __linux__
 	if (owned && fd >= 0)
 		close(fd);
 #endif
@@ -142,7 +142,7 @@ Socket::~Socket()
 
 int Socket::read(void *data, size_t size)
 {
-#ifndef _WIN32
+#ifdef __linux__
 	auto ret = ::recv(fd, data, size, 0);
 	if (ret < 0)
 	{
@@ -159,7 +159,7 @@ int Socket::read(void *data, size_t size)
 
 int Socket::write(const void *data, size_t size)
 {
-#ifndef _WIN32
+#ifdef __linux__
 	auto ret = ::send(fd, data, size, MSG_NOSIGNAL);
 	if (ret < 0)
 	{

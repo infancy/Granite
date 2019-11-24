@@ -1,4 +1,4 @@
-/* Copyright (C) 2015-2018 Hans-Kristian Arntzen <maister@archlinux.us>
+/* Copyright (C) 2015-2019 Hans-Kristian Arntzen <maister@archlinux.us>
  *
  * Permission is hereby granted, free of charge,
  * to any person obtaining a copy of this software and associated documentation files (the "Software"),
@@ -177,9 +177,9 @@ static double find_cost(unsigned Nx, unsigned Ny, Mode mode, unsigned radix, con
 struct CostPropagate
 {
 	CostPropagate() = default;
-	CostPropagate(double cost, vector<unsigned> radices)
-	    : cost(cost)
-	    , radices(move(radices))
+	CostPropagate(double cost_, vector<unsigned> radices_)
+	    : cost(cost_)
+	    , radices(move(radices_))
 	{
 	}
 
@@ -373,9 +373,9 @@ static inline unsigned mode_to_input_components(Mode mode)
 	}
 }
 
-FFT::FFT(Context *context, unsigned Nx, unsigned Ny, unsigned radix, unsigned p, Mode mode, Target input_target,
+FFT::FFT(Context *context_, unsigned Nx, unsigned Ny, unsigned radix, unsigned p, Mode mode, Target input_target,
          Target output_target, std::shared_ptr<ProgramCache> program_cache, const FFTOptions &options)
-    : context(context)
+    : context(context_)
     , cache(move(program_cache))
     , size_x(Nx)
     , size_y(Ny)
@@ -493,10 +493,10 @@ static inline unsigned type_to_input_components(Type type)
 	}
 }
 
-FFT::FFT(Context *context, unsigned Nx, unsigned Ny, Type type, Direction direction, Target input_target,
+FFT::FFT(Context *context_, unsigned Nx, unsigned Ny, Type type, Direction direction, Target input_target,
          Target output_target, std::shared_ptr<ProgramCache> program_cache, const FFTOptions &options,
          const FFTWisdom &wisdom)
-    : context(context)
+    : context(context_)
     , cache(move(program_cache))
     , size_x(Nx)
     , size_y(Ny)
@@ -732,6 +732,9 @@ unique_ptr<Program> FFT::build_program(const Parameters &params)
 
 	str += "#version 450\n";
 
+	if ((params.fft_fp16 || params.input_fp16 || params.output_fp16) && context->supports_native_fp16())
+		str += "#define FFT_NATIVE_FP16\n";
+
 	if (params.p1)
 	{
 		str += "#define FFT_P1\n";
@@ -876,27 +879,27 @@ unique_ptr<Program> FFT::build_program(const Parameters &params)
 	return prog;
 }
 
-double FFT::bench(Context *context, Resource *output, Resource *input, unsigned warmup_iterations, unsigned iterations,
+double FFT::bench(Context *bench_context, Resource *output, Resource *input, unsigned warmup_iterations, unsigned iterations,
                   unsigned dispatches_per_iteration, double max_time)
 {
-	context->wait_idle();
-	auto *cmd = context->request_command_buffer();
+	bench_context->wait_idle();
+	auto *bench_cmd = bench_context->request_command_buffer();
 	for (unsigned i = 0; i < warmup_iterations; i++)
 	{
-		process(cmd, output, input);
+		process(bench_cmd, output, input);
 	}
-	context->submit_command_buffer(cmd);
-	context->wait_idle();
+	bench_context->submit_command_buffer(bench_cmd);
+	bench_context->wait_idle();
 
 	unsigned runs = 0;
-	double start_time = context->get_time();
+	double start_time = bench_context->get_time();
 	double total_time = 0.0;
 
-	for (unsigned i = 0; i < iterations && (((context->get_time() - start_time) < max_time) || i == 0); i++)
+	for (unsigned i = 0; i < iterations && (((bench_context->get_time() - start_time) < max_time) || i == 0); i++)
 	{
-		auto *cmd = context->request_command_buffer();
+		auto *cmd = bench_context->request_command_buffer();
 
-		double iteration_start = context->get_time();
+		double iteration_start = bench_context->get_time();
 		for (unsigned d = 0; d < dispatches_per_iteration; d++)
 		{
 			process(cmd, output, input);
@@ -904,10 +907,10 @@ double FFT::bench(Context *context, Resource *output, Resource *input, unsigned 
 			runs++;
 		}
 
-		context->submit_command_buffer(cmd);
-		context->wait_idle();
+		bench_context->submit_command_buffer(cmd);
+		bench_context->wait_idle();
 
-		double iteration_end = context->get_time();
+		double iteration_end = bench_context->get_time();
 		total_time += iteration_end - iteration_start;
 	}
 

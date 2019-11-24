@@ -1,4 +1,4 @@
-/* Copyright (c) 2017-2018 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2019 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -27,7 +27,7 @@
 #include "application.hpp"
 #include "application_events.hpp"
 #include "application_wsi.hpp"
-#include "vulkan.hpp"
+#include "vulkan_headers.hpp"
 #include <string.h>
 #include <signal.h>
 
@@ -83,11 +83,16 @@ static bool vulkan_update_display_mode(unsigned *width, unsigned *height, const 
 struct WSIPlatformDisplay : Granite::GraniteWSIPlatform
 {
 public:
-	WSIPlatformDisplay(unsigned width, unsigned height)
-		: width(width), height(height)
+	bool init(unsigned width_, unsigned height_)
 	{
+		width = width_;
+		height = height_;
+
 		if (!Context::init_loader(nullptr))
-			throw runtime_error("Failed to initialize Vulkan loader.");
+		{
+			LOGE("Failed to initialize Vulkan loader.\n");
+			return false;
+		}
 
 		auto *em = Global::event_manager();
 		if (em)
@@ -120,6 +125,7 @@ public:
 			LOGI("Failed to initialize input manager.\n");
 		}
 #endif
+		return true;
 	}
 
 	~WSIPlatformDisplay()
@@ -297,11 +303,11 @@ out:
 		return height;
 	}
 
-	void notify_resize(unsigned width, unsigned height)
+	void notify_resize(unsigned width_, unsigned height_)
 	{
 		resize = true;
-		this->width = width;
-		this->height = height;
+		width = width_;
+		height = height_;
 	}
 
 	void signal_die()
@@ -337,13 +343,18 @@ int application_main(Application *(*create_application)(int, char **), int argc,
 	auto app = unique_ptr<Granite::Application>(create_application(argc, argv));
 	if (app)
 	{
-		if (!app->init_wsi(make_unique<Granite::WSIPlatformDisplay>(1280, 720)))
+		auto platform = make_unique<Granite::WSIPlatformDisplay>();
+		if (!platform->init(1280, 720))
+			return 1;
+		if (!app->init_wsi(move(platform)))
 			return 1;
 
 		Granite::Global::start_audio_system();
 		while (app->poll())
 			app->run_frame();
 		Granite::Global::stop_audio_system();
+		app.reset();
+		Granite::Global::deinit();
 		return 0;
 	}
 	else

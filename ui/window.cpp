@@ -1,4 +1,4 @@
-/* Copyright (c) 2017-2018 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2019 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -35,10 +35,15 @@ Window::Window()
 	set_floating(true);
 }
 
-void Window::set_title(const std::string &title)
+void Window::set_title(const std::string &title_)
 {
-	this->title = title;
+	title = title_;
 	geometry_changed();
+}
+
+void Window::set_title_color(const vec4 &color)
+{
+	title_color = color;
 }
 
 Widget *Window::on_mouse_button_pressed(vec2 offset)
@@ -55,6 +60,9 @@ Widget *Window::on_mouse_button_pressed(vec2 offset)
 
 	for (auto &child : children)
 	{
+		if (!child.widget->get_visible())
+			continue;
+
 		if (any(lessThan(offset, child.offset + vec2(0.0f, off_y))) ||
 		    any(greaterThanEqual(offset, child.offset + vec2(0.0f, off_y) + child.size)))
 			continue;
@@ -102,7 +110,7 @@ float Window::render(FlatRenderer &renderer, float layer, vec2 offset, vec2 size
 			renderer.render_textured_quad(image.get_view(),
 			                              vec3(offset, layer), size,
 			                              vec2(0.0f), vec2(image.get_width(0), image.get_height(0)),
-			                              true, bg_color, Vulkan::StockSampler::LinearClamp);
+			                              DrawPipeline::AlphaBlend, bg_color, Vulkan::StockSampler::LinearClamp);
 		}
 		else
 		{
@@ -120,13 +128,13 @@ float Window::render(FlatRenderer &renderer, float layer, vec2 offset, vec2 size
 			{offset.x + size.x - geometry.margin, line_y + offset.y},
 		};
 
-		renderer.render_line_strip(offsets, layer - 0.5f, 2, vec4(0.0f, 0.0f, 0.0f, 1.0f));
+		renderer.render_line_strip(offsets, layer - 0.5f, 2, title_color);
 		offsets[0].y += 2.0f;
 		offsets[1].y += 2.0f;
-		renderer.render_line_strip(offsets, layer - 0.5f, 2, vec4(0.0f, 0.0f, 0.0f, 1.0f));
+		renderer.render_line_strip(offsets, layer - 0.5f, 2, title_color);
 
 		renderer.render_text(font, title.c_str(),
-		                     vec3(offset, layer - 0.5f), size, vec4(0.0f, 0.0f, 0.0f, 1.0f),
+		                     vec3(offset, layer - 0.5f), size, title_color,
 		                     Font::Alignment::TopCenter);
 	}
 
@@ -145,10 +153,10 @@ void Window::reconfigure()
 		auto &ui = *Global::ui_manager();
 		auto &font = ui.get_font(FontSize::Large);
 		vec2 text_geom = font.get_text_geometry(title.c_str());
-		float line_y = text_geom.y + geometry.margin + 2.0f;
+		float y = text_geom.y + geometry.margin + 2.0f;
 
 		vec2 minimum = geometry.minimum;
-		minimum.y += line_y;
+		minimum.y += y;
 		minimum.x = max(text_geom.x + 2.0f * geometry.margin, minimum.x);
 		geometry.minimum = minimum;
 	}

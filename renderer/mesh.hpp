@@ -1,4 +1,4 @@
-/* Copyright (c) 2017-2018 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2019 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -66,7 +66,7 @@ struct MeshAttributeLayout
 struct StaticMeshVertex
 {
 	mat4 Model;
-	mat4 Normal;
+	//mat4 Normal;
 	enum
 	{
 		max_instances = 256
@@ -103,7 +103,7 @@ struct StaticMeshInstanceInfo
 struct SkinnedMeshInstanceInfo
 {
 	mat4 *world_transforms = nullptr;
-	mat4 *normal_transforms = nullptr;
+	//mat4 *normal_transforms = nullptr;
 	uint32_t num_bones = 0;
 };
 
@@ -167,7 +167,7 @@ struct StaticMesh : AbstractRenderable
 
 	AABB static_aabb;
 
-	void get_render_info(const RenderContext &context, const CachedSpatialTransformComponent *transform,
+	void get_render_info(const RenderContext &context, const RenderInfoComponent *transform,
 	                     RenderQueue &queue) const override;
 
 	DrawPipeline get_mesh_draw_pipeline() const override
@@ -196,7 +196,7 @@ private:
 
 struct SkinnedMesh : public StaticMesh
 {
-	void get_render_info(const RenderContext &context, const CachedSpatialTransformComponent *transform,
+	void get_render_info(const RenderContext &context, const RenderInfoComponent *transform,
 	                     RenderQueue &queue) const override;
 };
 }

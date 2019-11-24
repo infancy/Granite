@@ -1,4 +1,4 @@
-/* Copyright (c) 2017-2018 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2019 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -30,9 +30,9 @@ namespace Granite
 {
 namespace UI
 {
-void ToggleButton::set_text(std::string text)
+void ToggleButton::set_text(std::string text_)
 {
-	this->text = move(text);
+	text = move(text_);
 	geometry_changed();
 }
 

@@ -1,4 +1,4 @@
-/* Copyright (c) 2017-2018 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2019 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -28,7 +28,7 @@ namespace Vulkan
 FenceHolder::~FenceHolder()
 {
 	if (fence != VK_NULL_HANDLE)
-		device->reset_fence(fence);
+		device->reset_fence(fence, observed_wait);
 }
 
 VkFence FenceHolder::get_fence() const
@@ -38,13 +38,47 @@ VkFence FenceHolder::get_fence() const
 
 void FenceHolder::wait()
 {
-	if (vkWaitForFences(device->get_device(), 1, &fence, VK_TRUE, UINT64_MAX) != VK_SUCCESS)
-		LOGE("Failed to wait for fence!\n");
+	auto &table = device->get_device_table();
+	if (timeline_value != 0)
+	{
+		VK_ASSERT(timeline_semaphore);
+		VkSemaphoreWaitInfoKHR info = { VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO_KHR };
+		info.semaphoreCount = 1;
+		info.pSemaphores = &timeline_semaphore;
+		info.pValues = &timeline_value;
+		if (table.vkWaitSemaphoresKHR(device->get_device(), &info, UINT64_MAX) != VK_SUCCESS)
+			LOGE("Failed to wait for timeline semaphore!\n");
+		else
+			observed_wait = true;
+	}
+	else
+	{
+		if (table.vkWaitForFences(device->get_device(), 1, &fence, VK_TRUE, UINT64_MAX) != VK_SUCCESS)
+			LOGE("Failed to wait for fence!\n");
+		else
+			observed_wait = true;
+	}
 }
 
 bool FenceHolder::wait_timeout(uint64_t timeout)
 {
-	return vkWaitForFences(device->get_device(), 1, &fence, VK_TRUE, timeout) == VK_SUCCESS;
+	bool ret = false;
+	auto &table = device->get_device_table();
+	if (timeline_value != 0)
+	{
+		VK_ASSERT(timeline_semaphore);
+		VkSemaphoreWaitInfoKHR info = { VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO_KHR };
+		info.semaphoreCount = 1;
+		info.pSemaphores = &timeline_semaphore;
+		info.pValues = &timeline_value;
+		ret = table.vkWaitSemaphoresKHR(device->get_device(), &info, timeout) == VK_SUCCESS;
+	}
+	else
+		ret = table.vkWaitForFences(device->get_device(), 1, &fence, VK_TRUE, timeout) == VK_SUCCESS;
+
+	if (ret)
+		observed_wait = true;
+	return ret;
 }
 
 void FenceHolderDeleter::operator()(Vulkan::FenceHolder *fence)

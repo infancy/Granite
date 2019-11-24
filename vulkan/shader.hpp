@@ -1,4 +1,4 @@
-/* Copyright (c) 2017-2018 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2019 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -27,8 +27,13 @@
 #include "hash.hpp"
 #include "intrusive.hpp"
 #include "limits.hpp"
-#include "vulkan.hpp"
+#include "vulkan_headers.hpp"
 #include "enum_cast.hpp"
+
+namespace spirv_cross
+{
+struct SPIRType;
+}
 
 namespace Vulkan
 {
@@ -51,6 +56,7 @@ struct ResourceLayout
 	uint32_t output_mask = 0;
 	uint32_t push_constant_size = 0;
 	uint32_t spec_constant_mask = 0;
+	uint32_t bindless_set_mask = 0;
 	DescriptorSetLayout sets[VULKAN_NUM_DESCRIPTOR_SETS];
 };
 
@@ -63,9 +69,32 @@ struct CombinedResourceLayout
 	uint32_t stages_for_sets[VULKAN_NUM_DESCRIPTOR_SETS] = {};
 	VkPushConstantRange push_constant_range = {};
 	uint32_t descriptor_set_mask = 0;
+	uint32_t bindless_descriptor_set_mask = 0;
 	uint32_t spec_constant_mask[Util::ecast(ShaderStage::Count)] = {};
 	uint32_t combined_spec_constant_mask = 0;
 	Util::Hash push_constant_layout_hash = 0;
+};
+
+struct ResourceBinding
+{
+	union {
+		VkDescriptorBufferInfo buffer;
+		struct
+		{
+			VkDescriptorImageInfo fp;
+			VkDescriptorImageInfo integer;
+		} image;
+		VkBufferView buffer_view;
+	};
+	VkDeviceSize dynamic_offset;
+};
+
+struct ResourceBindings
+{
+	ResourceBinding bindings[VULKAN_NUM_DESCRIPTOR_SETS][VULKAN_NUM_BINDINGS];
+	uint64_t cookies[VULKAN_NUM_DESCRIPTOR_SETS][VULKAN_NUM_BINDINGS];
+	uint64_t secondary_cookies[VULKAN_NUM_DESCRIPTOR_SETS][VULKAN_NUM_BINDINGS];
+	uint8_t push_constant_data[VULKAN_PUSH_CONSTANT_SIZE];
 };
 
 class PipelineLayout : public HashedObject<PipelineLayout>
@@ -89,11 +118,18 @@ public:
 		return set_allocators[set];
 	}
 
+	VkDescriptorUpdateTemplateKHR get_update_template(unsigned set) const
+	{
+		return update_template[set];
+	}
+
 private:
 	Device *device;
 	VkPipelineLayout pipe_layout = VK_NULL_HANDLE;
 	CombinedResourceLayout layout;
 	DescriptorSetAllocator *set_allocators[VULKAN_NUM_DESCRIPTOR_SETS] = {};
+	VkDescriptorUpdateTemplateKHR update_template[VULKAN_NUM_DESCRIPTOR_SETS] = {};
+	void create_update_templates();
 };
 
 class Shader : public HashedObject<Shader>
@@ -118,6 +154,8 @@ private:
 	Device *device;
 	VkShaderModule module;
 	ResourceLayout layout;
+
+	void update_array_info(const spirv_cross::SPIRType &type, unsigned set, unsigned binding);
 };
 
 class Program : public HashedObject<Program>, public InternalSyncEnabled

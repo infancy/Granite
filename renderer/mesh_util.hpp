@@ -1,4 +1,4 @@
-/* Copyright (c) 2017-2018 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2019 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -36,6 +36,9 @@ class ImportedMesh : public StaticMesh, public EventHandler
 public:
 	ImportedMesh(const SceneFormats::Mesh &mesh, const SceneFormats::MaterialInfo &info);
 
+	const SceneFormats::Mesh &get_mesh() const;
+	const SceneFormats::MaterialInfo &get_material_info() const;
+
 private:
 	SceneFormats::Mesh mesh;
 	SceneFormats::MaterialInfo info;
@@ -49,6 +52,9 @@ class ImportedSkinnedMesh : public SkinnedMesh, public EventHandler
 public:
 	ImportedSkinnedMesh(const SceneFormats::Mesh &mesh, const SceneFormats::MaterialInfo &info);
 
+	const SceneFormats::Mesh &get_mesh() const;
+	const SceneFormats::MaterialInfo &get_material_info() const;
+
 private:
 	SceneFormats::Mesh mesh;
 	SceneFormats::MaterialInfo info;
@@ -56,6 +62,40 @@ private:
 	void on_device_created(const Vulkan::DeviceCreatedEvent &event);
 	void on_device_destroyed(const Vulkan::DeviceCreatedEvent &event);
 };
+
+template <typename StaticMesh = ImportedMesh, typename SkinnedMesh = ImportedSkinnedMesh>
+inline AbstractRenderableHandle create_imported_mesh(const SceneFormats::Mesh &mesh,
+                                                     const SceneFormats::MaterialInfo *materials)
+{
+	SceneFormats::MaterialInfo default_material;
+	default_material.uniform_base_color = vec4(0.3f, 1.0f, 0.3f, 1.0f);
+	default_material.uniform_metallic = 0.0f;
+	default_material.uniform_roughness = 1.0f;
+	AbstractRenderableHandle renderable;
+
+	bool skinned = mesh.attribute_layout[Util::ecast(MeshAttribute::BoneIndex)].format != VK_FORMAT_UNDEFINED;
+	if (skinned)
+	{
+		if (mesh.has_material)
+		{
+			renderable = Util::make_handle<SkinnedMesh>(mesh,
+			                                            materials[mesh.material_index]);
+		}
+		else
+			renderable = Util::make_handle<SkinnedMesh>(mesh, default_material);
+	}
+	else
+	{
+		if (mesh.has_material)
+		{
+			renderable = Util::make_handle<StaticMesh>(mesh,
+			                                           materials[mesh.material_index]);
+		}
+		else
+			renderable = Util::make_handle<StaticMesh>(mesh, default_material);
+	}
+	return renderable;
+}
 
 class CubeMesh : public StaticMesh, public EventHandler
 {
@@ -68,7 +108,7 @@ private:
 	void on_device_destroyed(const Vulkan::DeviceCreatedEvent &event);
 };
 
-struct SphereMeshData
+struct GeneratedMeshData
 {
 	struct Attribute
 	{
@@ -79,16 +119,68 @@ struct SphereMeshData
 	std::vector<vec3> positions;
 	std::vector<Attribute> attributes;
 	std::vector<uint16_t> indices;
-};
-SphereMeshData create_sphere_mesh(unsigned density);
 
-class SphereMesh : public StaticMesh, public EventHandler
+	VkPrimitiveTopology topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+	bool primitive_restart = false;
+	bool has_uvs = false;
+};
+GeneratedMeshData create_sphere_mesh(unsigned density);
+GeneratedMeshData create_cone_mesh(unsigned density, float height, float radius);
+GeneratedMeshData create_cylinder_mesh(unsigned density, float height, float radius);
+GeneratedMeshData create_capsule_mesh(unsigned density, float height, float radius);
+
+class GeneratedMesh : public StaticMesh
+{
+protected:
+	void setup_from_generated_mesh(Vulkan::Device &device, const GeneratedMeshData &generated);
+};
+
+class SphereMesh : public GeneratedMesh, public EventHandler
 {
 public:
 	SphereMesh(unsigned density = 16);
 
 private:
 	unsigned density;
+	void on_device_created(const Vulkan::DeviceCreatedEvent &event);
+	void on_device_destroyed(const Vulkan::DeviceCreatedEvent &event);
+};
+
+class ConeMesh : public GeneratedMesh, public EventHandler
+{
+public:
+	ConeMesh(unsigned density, float height, float radius);
+
+private:
+	unsigned density;
+	float height;
+	float radius;
+	void on_device_created(const Vulkan::DeviceCreatedEvent &event);
+	void on_device_destroyed(const Vulkan::DeviceCreatedEvent &event);
+};
+
+class CylinderMesh : public GeneratedMesh, public EventHandler
+{
+public:
+	CylinderMesh(unsigned density, float height, float radius);
+
+private:
+	unsigned density;
+	float height;
+	float radius;
+	void on_device_created(const Vulkan::DeviceCreatedEvent &event);
+	void on_device_destroyed(const Vulkan::DeviceCreatedEvent &event);
+};
+
+class CapsuleMesh : public GeneratedMesh, public EventHandler
+{
+public:
+	CapsuleMesh(unsigned density, float height, float radius);
+
+private:
+	unsigned density;
+	float height;
+	float radius;
 	void on_device_created(const Vulkan::DeviceCreatedEvent &event);
 	void on_device_destroyed(const Vulkan::DeviceCreatedEvent &event);
 };
@@ -100,12 +192,12 @@ public:
 	void set_image(Vulkan::ImageHandle skybox);
 	void set_image(Vulkan::Texture *skybox);
 
-	void get_render_info(const RenderContext &context, const CachedSpatialTransformComponent *transform,
+	void get_render_info(const RenderContext &context, const RenderInfoComponent *transform,
 	                     RenderQueue &queue) const override;
 
-	void set_color_mod(const vec3 &color)
+	void set_color_mod(const vec3 &color_)
 	{
-		this->color = color;
+		color = color_;
 	}
 
 private:
@@ -126,17 +218,17 @@ class SkyCylinder : public AbstractRenderable, public EventHandler
 public:
 	SkyCylinder(std::string bg_path);
 
-	void get_render_info(const RenderContext &context, const CachedSpatialTransformComponent *transform,
+	void get_render_info(const RenderContext &context, const RenderInfoComponent *transform,
 	                     RenderQueue &queue) const override;
 
-	void set_color_mod(const vec3 &color)
+	void set_color_mod(const vec3 &color_)
 	{
-		this->color = color;
+		color = color_;
 	}
 
-	void set_xz_scale(float scale)
+	void set_xz_scale(float scale_)
 	{
-		this->scale = scale;
+		scale = scale_;
 	}
 
 private:
@@ -182,7 +274,7 @@ public:
 		return vec4(normal, -dot(normal, position));
 	}
 
-	void get_render_info(const RenderContext &context, const CachedSpatialTransformComponent *transform,
+	void get_render_info(const RenderContext &context, const RenderInfoComponent *transform,
 	                     RenderQueue &queue) const override;
 
 	void set_plane(const vec3 &position, const vec3 &normal, const vec3 &up, float extent_up, float extent_across);

@@ -1,4 +1,4 @@
-/* Copyright (c) 2017-2018 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2019 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -32,8 +32,8 @@ using namespace Util;
 
 namespace Granite
 {
-FlatRenderer::FlatRenderer(const ShaderSuiteResolver *resolver)
-	: resolver(resolver)
+FlatRenderer::FlatRenderer(const ShaderSuiteResolver *resolver_)
+	: resolver(resolver_)
 {
 	EVENT_MANAGER_REGISTER_LATCH(FlatRenderer, on_device_created, on_device_destroyed, DeviceCreatedEvent);
 	reset_scissor();
@@ -58,18 +58,18 @@ void FlatRenderer::pop_scissor()
 
 void FlatRenderer::on_device_created(const DeviceCreatedEvent &created)
 {
-	auto &device = created.get_device();
+	auto &dev = created.get_device();
 
 	ShaderSuiteResolver default_resolver;
 	auto *res = resolver ? resolver : &default_resolver;
 
-	res->init_shader_suite(device, suite[ecast(RenderableType::Sprite)], RendererType::Flat, RenderableType::Sprite);
-	res->init_shader_suite(device, suite[ecast(RenderableType::LineUI)], RendererType::Flat, RenderableType::LineUI);
+	res->init_shader_suite(dev, suite[ecast(RenderableType::Sprite)], RendererType::Flat, RenderableType::Sprite);
+	res->init_shader_suite(dev, suite[ecast(RenderableType::LineUI)], RendererType::Flat, RenderableType::LineUI);
 
 	for (auto &s : suite)
 		s.bake_base_defines();
 
-	this->device = &device;
+	device = &dev;
 }
 
 void FlatRenderer::on_device_destroyed(const DeviceCreatedEvent &)
@@ -113,12 +113,14 @@ void FlatRenderer::flush(Vulkan::CommandBuffer &cmd, const vec3 &camera_pos, con
 	queue.dispatch(Queue::Transparent, cmd, &state);
 }
 
-void FlatRenderer::render_quad(const ImageView *view, Vulkan::StockSampler sampler,
+void FlatRenderer::render_quad(const ImageView *view, unsigned layer, Vulkan::StockSampler sampler,
                                const vec3 &offset, const vec2 &size, const vec2 &tex_offset, const vec2 &tex_size, const vec4 &color,
-                               bool transparent)
+                               DrawPipeline pipeline)
 {
-	auto type = transparent ? Queue::Transparent : Queue::Opaque;
-	auto pipeline = transparent ? DrawPipeline::AlphaBlend : DrawPipeline::Opaque;
+	if (color.w <= 0.0f)
+		return;
+	auto type = pipeline == DrawPipeline::AlphaBlend ? Queue::Transparent : Queue::Opaque;
+	bool layered = view && view->get_create_info().view_type == VK_IMAGE_VIEW_TYPE_2D_ARRAY;
 
 	SpriteRenderInfo sprite;
 	build_scissor(sprite.clip_quad, offset.xy(), offset.xy() + size);
@@ -130,12 +132,13 @@ void FlatRenderer::render_quad(const ImageView *view, Vulkan::StockSampler sampl
 
 	Hasher h;
 	h.string("quad");
-	h.s32(transparent);
+	h.s32(ecast(pipeline));
 	auto pipe_hash = h.get();
 	h.s32(sprite.clip_quad.x);
 	h.s32(sprite.clip_quad.y);
 	h.s32(sprite.clip_quad.z);
 	h.s32(sprite.clip_quad.w);
+	h.s32(layered);
 
 	if (view)
 	{
@@ -152,24 +155,29 @@ void FlatRenderer::render_quad(const ImageView *view, Vulkan::StockSampler sampl
 
 	if (sprite_data)
 	{
+		uint32_t flags = 0;
+		if (layered && view)
+			flags |= Sprite::ARRAY_TEXTURE_BIT;
+
 		if (view)
 		{
 			sprite.program = suite[ecast(RenderableType::Sprite)].get_program(pipeline,
 			                                                                  MESH_ATTRIBUTE_POSITION_BIT |
 			                                                                  MESH_ATTRIBUTE_VERTEX_COLOR_BIT |
 			                                                                  MESH_ATTRIBUTE_UV_BIT,
-			                                                                  MATERIAL_TEXTURE_BASE_COLOR_BIT);
+			                                                                  MATERIAL_TEXTURE_BASE_COLOR_BIT, flags);
 		}
 		else
 		{
 			sprite.program = suite[ecast(RenderableType::Sprite)].get_program(pipeline,
 			                                                                  MESH_ATTRIBUTE_POSITION_BIT |
-			                                                                  MESH_ATTRIBUTE_VERTEX_COLOR_BIT, 0);
+			                                                                  MESH_ATTRIBUTE_VERTEX_COLOR_BIT, 0, flags);
 		}
 		*sprite_data = sprite;
 	}
 
 	quads->layer = offset.z;
+	quads->array_layer = float(layer);
 	quads->pos_off_x = offset.x;
 	quads->pos_off_y = offset.y;
 	quads->pos_scale_x = size.x;
@@ -185,15 +193,22 @@ void FlatRenderer::render_quad(const ImageView *view, Vulkan::StockSampler sampl
 	quads->rotation[3] = 1.0f;
 }
 
-void FlatRenderer::render_textured_quad(const ImageView &view, const vec3 &offset, const vec2 &size, const vec2 &tex_offset,
-                                        const vec2 &tex_size, bool transparent, const vec4 &color, Vulkan::StockSampler sampler)
+void FlatRenderer::render_textured_quad(const ImageView &view,
+                                        const vec3 &offset, const vec2 &size, const vec2 &tex_offset,
+                                        const vec2 &tex_size, DrawPipeline pipeline, const vec4 &color, Vulkan::StockSampler sampler,
+                                        unsigned layer)
 {
-	render_quad(&view, sampler, offset, size, tex_offset, tex_size, color, transparent);
+	if (color.w <= 0.0f)
+		return;
+	render_quad(&view, layer, sampler, offset, size, tex_offset, tex_size, color, pipeline);
 }
 
 void FlatRenderer::render_quad(const vec3 &offset, const vec2 &size, const vec4 &color)
 {
-	render_quad(nullptr, Vulkan::StockSampler::Count, offset, size, vec2(0.0f), vec2(0.0f), color, color.w < 1.0f);
+	if (color.w <= 0.0f)
+		return;
+	render_quad(nullptr, 0, Vulkan::StockSampler::Count, offset, size, vec2(0.0f), vec2(0.0f), color,
+	            color.w < 1.0f ? DrawPipeline::AlphaBlend : DrawPipeline::Opaque);
 }
 
 void FlatRenderer::build_scissor(ivec4 &clip, const vec2 &minimum, const vec2 &maximum) const
@@ -211,6 +226,8 @@ void FlatRenderer::build_scissor(ivec4 &clip, const vec2 &minimum, const vec2 &m
 
 void FlatRenderer::render_line_strip(const vec2 *offset, float layer, unsigned count, const vec4 &color)
 {
+	if (color.w <= 0.0f)
+		return;
 	auto transparent = color.w < 1.0f;
 	LineStripInfo strip;
 
@@ -261,6 +278,8 @@ void FlatRenderer::render_line_strip(const vec2 *offset, float layer, unsigned c
 void FlatRenderer::render_text(const Font &font, const char *text, const vec3 &offset, const vec2 &size, const vec4 &color,
                                Font::Alignment alignment, float scale)
 {
+	if (color.w <= 0.0f)
+		return;
 	font.render_text(queue, text, offset, size,
 	                 scissor_stack.back().offset, scissor_stack.back().size,
 	                 color, alignment, scale);
