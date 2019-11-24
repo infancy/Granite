@@ -209,7 +209,7 @@ void StaticMesh::fill_render_info(StaticMeshInfo &info) const
 
 void StaticMesh::bake()
 {
-	cached_hash = get_instance_key();
+	cached_hash = get_instance_key(); // cool~
 }
 
 static Queue material_to_queue(const Material &mat)
@@ -252,7 +252,7 @@ void StaticMesh::get_render_info(const RenderContext &context, const CachedSpati
 	                                             RenderFunctions::static_mesh_render,
 	                                             instance_data);
 
-	if (mesh_info)
+	if (mesh_info) // if it's the first time that push to queue
 	{
 		uint32_t textures = 0;
 		for (unsigned i = 0; i < ecast(Material::Textures::Count); i++)

@@ -127,7 +127,7 @@ precision highp sampler2D;
 #define uTexelOffset constant_data.texture_offset_scale.xy
 #define uTexelScale constant_data.texture_offset_scale.zw
 
-layout(binding = BINDING_TEXTURE0) uniform sampler2D uTexture;
+layout(binding = BINDING_TEXTURE0)  sampler2D uTexture;
 #ifdef FFT_CONVOLVE
 layout(binding = BINDING_TEXTURE1) uniform sampler2D uTexture2;
 #endif

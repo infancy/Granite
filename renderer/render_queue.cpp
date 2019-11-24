@@ -68,6 +68,7 @@ void RenderQueue::dispatch(Queue queue_type, CommandBuffer &cmd, const CommandBu
 			instances++;
 		}
 
+		// using RenderFunc = void (*)(Vulkan::CommandBuffer &, const RenderQueueData *, unsigned);
 		queue[begin].render(cmd, &queue[begin], instances);
 		begin += instances;
 	}

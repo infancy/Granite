@@ -37,7 +37,7 @@ namespace Granite
 class ShaderSuite;
 class RenderContext;
 
-enum class Queue : unsigned
+enum class Queue : unsigned // rename to QueueType???
 {
 	Opaque = 0,
 	OpaqueEmissive,
@@ -119,7 +119,7 @@ public:
 		using WrappedT = QueueDataWrapped<T>;
 
 		auto *itr = render_infos.find(h.get());
-		if (itr)
+		if (itr) // it already exists
 		{
 			auto *t = static_cast<WrappedT *>(itr);
 			enqueue_queue_data(queue, { render, &t->data, instance_data, sorting_key });
@@ -135,7 +135,7 @@ public:
 			t->set_hash(h.get());
 			render_infos.insert_replace(t);
 			enqueue_queue_data(queue, { render, &t->data, instance_data, sorting_key });
-			return &t->data;
+			return &t->data; // The data needs to be filled by caller
 		}
 	}
 
@@ -212,6 +212,7 @@ private:
 	Chain large_blocks;
 	Chain::iterator current = std::end(blocks);
 
+	// std::vector<RenderQueueData> queues[4];
 	std::vector<RenderQueueData> queues[static_cast<unsigned>(Queue::Count)];
 
 	void *allocate_from_block(Block &block, size_t size, size_t alignment);

@@ -1,4 +1,5 @@
 #include "ecs.hpp"
+#include <iostream>
 
 using namespace Granite;
 using namespace std;
@@ -33,8 +34,20 @@ struct CComponent : ComponentBase
 	int v;
 };
 
+template <uint64_t hash>
+uint64_t compile_hash()
+{
+	return hash;
+}
+
 int main()
 {
+	//static_assert(::Util::compile_time_fnv1("FNV Hash Test") == 0xcce9980dbe477f71, "xx");
+
+	std::cout << ::Util::compile_time_fnv1("tseT hsaH VNF") << '\n';
+	std::cout << compile_hash<::Util::compile_time_fnv1("tseT hsaH VNF")>() << '\n';
+
+
 	EntityPool pool;
 	auto a = pool.create_entity();
 	a->allocate_component<AComponent>(10);

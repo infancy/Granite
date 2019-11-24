@@ -624,6 +624,7 @@ private:
 	const RenderPass *actual_render_pass = nullptr;
 	const RenderPass *compatible_render_pass = nullptr;
 
+    // associated with vertex
 	VertexAttribState attribs[VULKAN_NUM_VERTEX_ATTRIBS] = {};
 	IndexState index = {};
 	VertexBindingState vbo = {};
@@ -696,6 +697,7 @@ private:
 #ifdef GRANITE_VULKAN_FILESYSTEM
 struct CommandBufferUtil
 {
+    // several common funcs
 	static void draw_fullscreen_quad(CommandBuffer &cmd, const std::string &vertex, const std::string &fragment,
 	                                 const std::vector<std::pair<std::string, int>> &defines = {});
 	static void draw_fullscreen_quad_depth(CommandBuffer &cmd, const std::string &vertex, const std::string &fragment,

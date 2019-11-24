@@ -112,9 +112,11 @@ struct StaticMeshInfo
 	const Vulkan::Buffer *vbo_position;
 	const Vulkan::Buffer *vbo_attributes;
 	const Vulkan::Buffer *ibo;
+	
 	const Vulkan::ImageView *views[Util::ecast(Material::Textures::Count)];
 	Vulkan::StockSampler sampler;
 	Vulkan::Program *program;
+	
 	VkPrimitiveTopology topology;
 
 	MeshAttributeLayout attributes[Util::ecast(MeshAttribute::Count)];
@@ -135,9 +137,9 @@ struct StaticMeshInfo
 
 namespace RenderFunctions
 {
-void static_mesh_render(Vulkan::CommandBuffer &cmd, const RenderQueueData *render, unsigned instances);
-void debug_mesh_render(Vulkan::CommandBuffer &cmd, const RenderQueueData *render, unsigned instances);
-void line_strip_render(Vulkan::CommandBuffer &cmd, const RenderQueueData *render, unsigned instances);
+void   line_strip_render(Vulkan::CommandBuffer &cmd, const RenderQueueData *render, unsigned instances);
+void   debug_mesh_render(Vulkan::CommandBuffer &cmd, const RenderQueueData *render, unsigned instances);
+void  static_mesh_render(Vulkan::CommandBuffer &cmd, const RenderQueueData *render, unsigned instances);
 void skinned_mesh_render(Vulkan::CommandBuffer &cmd, const RenderQueueData *render, unsigned instances);
 void mesh_set_state(Vulkan::CommandBuffer &cmd, const StaticMeshInfo &info);
 }

@@ -273,7 +273,7 @@ template <typename T, typename Deleter, typename ReferenceOps>
 IntrusivePtr<T> IntrusivePtrEnabled<T, Deleter, ReferenceOps>::reference_from_this()
 {
 	add_reference();
-	return IntrusivePtr<T>(static_cast<T *>(this));
+	return IntrusivePtr<T>(static_cast<T *>(this)); // down_cast ???
 }
 
 template <typename Derived>
